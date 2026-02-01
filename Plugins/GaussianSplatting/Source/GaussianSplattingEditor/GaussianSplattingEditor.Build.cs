@@ -2,9 +2,9 @@
 
 using UnrealBuildTool;
 
-public class GaussianSplatting : ModuleRules
+public class GaussianSplattingEditor : ModuleRules
 {
-	public GaussianSplatting(ReadOnlyTargetRules Target) : base(Target)
+	public GaussianSplattingEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
@@ -24,10 +24,7 @@ public class GaussianSplatting : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"RenderCore",
-				"RHI",
-				"Renderer",
-				"Projects"
+				"GaussianSplatting"
 			}
 		);
 
@@ -35,7 +32,12 @@ public class GaussianSplatting : ModuleRules
 			new string[]
 			{
 				"Slate",
-				"SlateCore"
+				"SlateCore",
+				"UnrealEd",
+				"AssetTools",
+				"EditorFramework",
+				"Projects",
+				"ToolMenus"
 			}
 		);
 
