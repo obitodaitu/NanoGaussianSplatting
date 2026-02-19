@@ -40,6 +40,7 @@ uint32 FGaussianSplatRenderer::NextPowerOfTwo(uint32 Value)
 	return Value;
 }
 
+//Trigger all dispatch functions
 void FGaussianSplatRenderer::Render(
 	FRHICommandListImmediate& RHICmdList,
 	const FSceneView& View,

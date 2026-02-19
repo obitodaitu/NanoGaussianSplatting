@@ -9,7 +9,7 @@ class UGaussianSplatAsset;
 
 /**
  * Asset type actions for Gaussian Splat assets
- * Provides editor integration like custom color, category, and actions
+ * Provides content browser editor integration like custom color, category, and actions
  */
 class FAssetTypeActions_GaussianSplatAsset : public FAssetTypeActions_Base
 {

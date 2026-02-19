@@ -860,6 +860,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 //////////////////////////////////////////////////////////////////////////
 // FGaussianSplatSceneProxy
 
+//Constructor. Copies rendering parameters from the component
 FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent)
 	, CachedAsset(InComponent->SplatAsset)
@@ -952,6 +953,8 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	}
 }
 
+//critical setup. creates FGaussianSplatGPUResources which uploads all the GPU buffers 
+// registers itself with the ViewExtension
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
 	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateRenderThreadResources called! SplatCount=%d"), SplatCount);
