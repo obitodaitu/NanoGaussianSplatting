@@ -8,23 +8,28 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 {
 	OutSplats.Empty();
 
-	// Load file into memory
-	TArray<uint8> FileData;
-	if (!FFileHelper::LoadFileToArray(FileData, *FilePath))
+	// Open file with IFileHandle for streamed reading (supports files > 2 GB)
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	TUniquePtr<IFileHandle> FileHandle(PlatformFile.OpenRead(*FilePath));
+
+	if (!FileHandle)
 	{
-		OutError = FString::Printf(TEXT("Failed to load file: %s"), *FilePath);
+		OutError = FString::Printf(TEXT("Failed to open file: %s"), *FilePath);
 		return false;
 	}
 
-	if (FileData.Num() < 4)
+	const int64 FileSize = FileHandle->Size();
+	UE_LOG(LogTemp, Log, TEXT("PLY file size: %lld bytes (%.2f GB)"), FileSize, FileSize / (1024.0 * 1024.0 * 1024.0));
+
+	if (FileSize < 4)
 	{
 		OutError = TEXT("File too small to be a valid PLY file");
 		return false;
 	}
 
-	// Parse header
+	// Parse header (positions file handle at start of vertex data)
 	FPLYHeader Header;
-	if (!ParseHeader(FileData, Header, OutError))
+	if (!ParseHeader(FileHandle.Get(), Header, OutError))
 	{
 		return false;
 	}
@@ -32,8 +37,17 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 	UE_LOG(LogTemp, Log, TEXT("PLY Header parsed: %d vertices, %d bytes per vertex, data at offset %lld"),
 		Header.VertexCount, Header.VertexStride, Header.DataOffset);
 
-	// Read vertex data
-	if (!ReadVertexData(FileData, Header, OutSplats, OutError))
+	// Validate file size against expected data
+	const int64 ExpectedEnd = Header.DataOffset + static_cast<int64>(Header.VertexCount) * Header.VertexStride;
+	if (ExpectedEnd > FileSize)
+	{
+		OutError = FString::Printf(TEXT("File truncated: expected %lld bytes of vertex data, file size is %lld"),
+			ExpectedEnd, FileSize);
+		return false;
+	}
+
+	// Read vertex data using streamed I/O
+	if (!ReadVertexData(FileHandle.Get(), Header, OutSplats, OutError))
 	{
 		return false;
 	}
@@ -45,7 +59,6 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 bool FPLYFileReader::IsValidPLYFile(const FString& FilePath)
 {
 	// Quick check: read first few bytes and look for "ply" magic
-	// Use IFileHandle for partial read since LoadFileToArray loads entire file
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	TUniquePtr<IFileHandle> FileHandle(PlatformFile.OpenRead(*FilePath));
 
@@ -64,24 +77,37 @@ bool FPLYFileReader::IsValidPLYFile(const FString& FilePath)
 	return HeaderBytes[0] == 'p' && HeaderBytes[1] == 'l' && HeaderBytes[2] == 'y';
 }
 
-bool FPLYFileReader::ParseHeader(const TArray<uint8>& FileData, FPLYHeader& OutHeader, FString& OutError)
+bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader, FString& OutError)
 {
-	// Convert header portion to string (headers are ASCII)
-	FString HeaderString;
-	int32 HeaderEnd = -1;
+	// PLY headers are ASCII text, typically < 4 KB but we read up to 64 KB to be safe
+	constexpr int32 MaxHeaderSize = 65536;
+	TArray<uint8> HeaderBuffer;
+	HeaderBuffer.SetNumUninitialized(MaxHeaderSize);
 
-	// Find "end_header" and convert to string
+	// Read header bytes from the start of the file
+	FileHandle->Seek(0);
+	const int64 FileSize = FileHandle->Size();
+	const int32 BytesToRead = static_cast<int32>(FMath::Min(static_cast<int64>(MaxHeaderSize), FileSize));
+
+	if (!FileHandle->Read(HeaderBuffer.GetData(), BytesToRead))
+	{
+		OutError = TEXT("Failed to read PLY header bytes");
+		return false;
+	}
+
+	// Find "end_header" marker
 	const char* EndHeaderMarker = "end_header";
 	const int32 MarkerLen = FCStringAnsi::Strlen(EndHeaderMarker);
+	int32 HeaderEnd = -1;
 
-	for (int32 i = 0; i < FileData.Num() - MarkerLen; i++)
+	for (int32 i = 0; i < BytesToRead - MarkerLen; i++)
 	{
-		if (FMemory::Memcmp(&FileData[i], EndHeaderMarker, MarkerLen) == 0)
+		if (FMemory::Memcmp(&HeaderBuffer[i], EndHeaderMarker, MarkerLen) == 0)
 		{
 			// Find the newline after end_header
-			for (int32 j = i + MarkerLen; j < FileData.Num(); j++)
+			for (int32 j = i + MarkerLen; j < BytesToRead; j++)
 			{
-				if (FileData[j] == '\n')
+				if (HeaderBuffer[j] == '\n')
 				{
 					HeaderEnd = j + 1;
 					break;
@@ -93,13 +119,13 @@ bool FPLYFileReader::ParseHeader(const TArray<uint8>& FileData, FPLYHeader& OutH
 
 	if (HeaderEnd < 0)
 	{
-		OutError = TEXT("Could not find 'end_header' in PLY file");
+		OutError = TEXT("Could not find 'end_header' in PLY file (or header exceeds 64 KB)");
 		return false;
 	}
 
 	// Convert header to string
-	FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(FileData.GetData()), HeaderEnd);
-	HeaderString = FString(Converter.Length(), Converter.Get());
+	FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(HeaderBuffer.GetData()), HeaderEnd);
+	FString HeaderString(Converter.Length(), Converter.Get());
 
 	OutHeader.DataOffset = HeaderEnd;
 
@@ -227,89 +253,112 @@ bool FPLYFileReader::ParseHeader(const TArray<uint8>& FileData, FPLYHeader& OutH
 		}
 	}
 
+	// Seek file handle to start of vertex data
+	FileHandle->Seek(OutHeader.DataOffset);
+
 	return true;
 }
 
-bool FPLYFileReader::ReadVertexData(const TArray<uint8>& FileData, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError)
+bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError)
 {
-	const int64 DataSize = static_cast<int64>(Header.VertexCount) * Header.VertexStride;
-	const int64 ExpectedEnd = Header.DataOffset + DataSize;
-
-	if (ExpectedEnd > FileData.Num())
-	{
-		OutError = FString::Printf(TEXT("File truncated: expected %lld bytes, got %d"),
-			ExpectedEnd, FileData.Num());
-		return false;
-	}
-
 	OutSplats.SetNum(Header.VertexCount);
 
-	const uint8* DataPtr = FileData.GetData() + Header.DataOffset;
+	// Read vertices in chunks for efficiency (4096 vertices per chunk)
+	constexpr int32 ChunkSize = 4096;
+	const int32 VertexStride = Header.VertexStride;
+	TArray<uint8> ChunkBuffer;
+	ChunkBuffer.SetNumUninitialized(ChunkSize * VertexStride);
 
-	for (int32 i = 0; i < Header.VertexCount; i++)
+	int32 VerticesRemaining = Header.VertexCount;
+	int32 VertexIndex = 0;
+
+	while (VerticesRemaining > 0)
 	{
-		const uint8* VertexData = DataPtr + static_cast<int64>(i) * Header.VertexStride;
-		FGaussianSplatData& Splat = OutSplats[i];
+		const int32 VerticesToRead = FMath::Min(ChunkSize, VerticesRemaining);
+		const int32 BytesToRead = VerticesToRead * VertexStride;
 
-		// Position - Convert from Y-up (OpenGL/3DGS) to Z-up (Unreal) with handedness fix
-		// PLY: X-right, Y-up, Z-forward (right-handed) -> UE: X-forward, Y-right, Z-up (left-handed)
-		// Negate Y to convert from right-handed to left-handed (fixes left-right mirror)
-		// Multiply by 100 to convert from meters (PLY) to centimeters (UE)
-		constexpr float MetersToUE = 100.0f;
-		float PlyX = GetPropertyFloat(VertexData, Header, TEXT("x"));
-		float PlyY = GetPropertyFloat(VertexData, Header, TEXT("y"));
-		float PlyZ = GetPropertyFloat(VertexData, Header, TEXT("z"));
-		Splat.Position.X = PlyZ * MetersToUE;    // PLY Z -> UE X (forward)
-		Splat.Position.Y = -PlyX * MetersToUE;   // PLY X -> UE -Y (right, negated for handedness)
-		Splat.Position.Z = PlyY * MetersToUE;    // PLY Y -> UE Z (up)
-
-		// Rotation (quaternion) - Convert coordinate system with handedness fix
-		// PLY uses (w, x, y, z) format with Y-up right-handed coordinate system
-		// When negating one axis (Y), negate quaternion components perpendicular to it (X and Z)
-		float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"));
-		float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"));
-		float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"));
-		float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"));
-		Splat.Rotation.W = QW;
-		Splat.Rotation.X = -QZ;   // PLY Z -> UE X, negated for handedness
-		Splat.Rotation.Y = QX;    // PLY X -> UE Y (flipped axis, not negated)
-		Splat.Rotation.Z = -QY;   // PLY Y -> UE Z, negated for handedness
-
-		// Scale - Reorder to match coordinate system conversion
-		// Scale is always positive magnitude, no negation needed
-		float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"));
-		float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"));
-		float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"));
-		Splat.Scale.X = ScaleZ;  // PLY Z -> UE X
-		Splat.Scale.Y = ScaleX;  // PLY X -> UE Y
-		Splat.Scale.Z = ScaleY;  // PLY Y -> UE Z
-
-		// Opacity
-		Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"));
-
-		// SH DC (base color)
-		Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("f_dc_0"));
-		Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("f_dc_1"));
-		Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
-
-		// SH rest coefficients (bands 1-3)
-		for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
+		if (!FileHandle->Read(ChunkBuffer.GetData(), BytesToRead))
 		{
-			// PLY stores SH in planar format (from save_ply: transpose(1,2).flatten())
-			// f_rest_0..14  = 15 coefficients for R channel
-			// f_rest_15..29 = 15 coefficients for G channel
-			// f_rest_30..44 = 15 coefficients for B channel
-			FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
-			FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients);
-			FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients * 2);
-
-			Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
-			Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);
-			Splat.SH[c].Z = GetPropertyFloat(VertexData, Header, PropNameB);
+			OutError = FString::Printf(TEXT("Failed to read vertex data at vertex %d"), VertexIndex);
+			return false;
 		}
 
-		// Linearize the data
-		LinearizeSplatData(Splat);
+		for (int32 i = 0; i < VerticesToRead; i++)
+		{
+			const uint8* VertexData = ChunkBuffer.GetData() + i * VertexStride;
+			FGaussianSplatData& Splat = OutSplats[VertexIndex];
+
+			// Position - Convert from Y-up (OpenGL/3DGS) to Z-up (Unreal) with handedness fix
+			// PLY: X-right, Y-up, Z-forward (right-handed) -> UE: X-forward, Y-right, Z-up (left-handed)
+			// Negate Y to convert from right-handed to left-handed (fixes left-right mirror)
+			// Multiply by 100 to convert from meters (PLY) to centimeters (UE)
+			constexpr float MetersToUE = 100.0f;
+			float PlyX = GetPropertyFloat(VertexData, Header, TEXT("x"));
+			float PlyY = GetPropertyFloat(VertexData, Header, TEXT("y"));
+			float PlyZ = GetPropertyFloat(VertexData, Header, TEXT("z"));
+			Splat.Position.X = PlyZ * MetersToUE;    // PLY Z -> UE X (forward)
+			Splat.Position.Y = -PlyX * MetersToUE;   // PLY X -> UE -Y (right, negated for handedness)
+			Splat.Position.Z = PlyY * MetersToUE;    // PLY Y -> UE Z (up)
+
+			// Rotation (quaternion) - Convert coordinate system with handedness fix
+			// PLY uses (w, x, y, z) format with Y-up right-handed coordinate system
+			// When negating one axis (Y), negate quaternion components perpendicular to it (X and Z)
+			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"));
+			float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"));
+			float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"));
+			float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"));
+			Splat.Rotation.W = QW;
+			Splat.Rotation.X = -QZ;   // PLY Z -> UE X, negated for handedness
+			Splat.Rotation.Y = QX;    // PLY X -> UE Y (flipped axis, not negated)
+			Splat.Rotation.Z = -QY;   // PLY Y -> UE Z, negated for handedness
+
+			// Scale - Reorder to match coordinate system conversion
+			// Scale is always positive magnitude, no negation needed
+			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"));
+			float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"));
+			float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"));
+			Splat.Scale.X = ScaleZ;  // PLY Z -> UE X
+			Splat.Scale.Y = ScaleX;  // PLY X -> UE Y
+			Splat.Scale.Z = ScaleY;  // PLY Y -> UE Z
+
+			// Opacity
+			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"));
+
+			// SH DC (base color)
+			Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("f_dc_0"));
+			Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("f_dc_1"));
+			Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
+
+			// SH rest coefficients (bands 1-3)
+			for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
+			{
+				// PLY stores SH in planar format (from save_ply: transpose(1,2).flatten())
+				// f_rest_0..14  = 15 coefficients for R channel
+				// f_rest_15..29 = 15 coefficients for G channel
+				// f_rest_30..44 = 15 coefficients for B channel
+				FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
+				FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients);
+				FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients * 2);
+
+				Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
+				Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);
+				Splat.SH[c].Z = GetPropertyFloat(VertexData, Header, PropNameB);
+			}
+
+			// Linearize the data
+			LinearizeSplatData(Splat);
+
+			VertexIndex++;
+		}
+
+		VerticesRemaining -= VerticesToRead;
+
+		// Log progress for large files
+		if (Header.VertexCount > 1000000 && VertexIndex % (Header.VertexCount / 10) < ChunkSize)
+		{
+			UE_LOG(LogTemp, Log, TEXT("  Reading PLY vertices: %d / %d (%.0f%%)"),
+				VertexIndex, Header.VertexCount, 100.0f * VertexIndex / Header.VertexCount);
+		}
 	}
 
 	return true;

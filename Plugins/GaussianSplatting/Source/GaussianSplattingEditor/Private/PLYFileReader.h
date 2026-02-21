@@ -32,6 +32,7 @@ struct FPLYHeader
 /**
  * Utility class for reading PLY files containing Gaussian Splatting data
  * Supports the standard PLY format from 3D Gaussian Splatting training
+ * Uses streamed I/O to handle files larger than 2 GB
  */
 class FPLYFileReader
 {
@@ -54,23 +55,25 @@ public:
 
 private:
 	/**
-	 * Parse the PLY header to extract format information
-	 * @param FileData Raw file data
+	 * Parse the PLY header from a file handle
+	 * Reads header bytes and parses format/property information
+	 * After parsing, the file handle position is at the start of vertex data
+	 * @param FileHandle Open file handle positioned at beginning
 	 * @param OutHeader Parsed header information
 	 * @param OutError Error message if parsing failed
 	 * @return True if successful
 	 */
-	static bool ParseHeader(const TArray<uint8>& FileData, FPLYHeader& OutHeader, FString& OutError);
+	static bool ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader, FString& OutError);
 
 	/**
-	 * Read vertex data from the PLY file
-	 * @param FileData Raw file data
+	 * Read vertex data from the PLY file using streamed I/O
+	 * @param FileHandle Open file handle positioned at start of vertex data
 	 * @param Header Parsed header information
 	 * @param OutSplats Output array of splat data
 	 * @param OutError Error message if reading failed
 	 * @return True if successful
 	 */
-	static bool ReadVertexData(const TArray<uint8>& FileData, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError);
+	static bool ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError);
 
 	/**
 	 * Linearize splat data from raw PLY values

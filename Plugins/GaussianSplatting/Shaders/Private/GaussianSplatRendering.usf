@@ -10,7 +10,7 @@
 StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 StructuredBuffer<uint> SortKeysBuffer;
 uint SplatCount;
-uint DebugMode;  // 0=off, 1=cluster colors, 2=LOD colors (future)
+uint DebugMode;  // 0=off, 1=cluster colors, 2=LOD level brightness
 #endif
 
 // Hash function to generate pseudo-random color from cluster ID
@@ -87,10 +87,18 @@ FVertexOutput MainVS(
 	float4 color = float4(rg.x, rg.y, ba.x, ba.y);
 
 	// Debug mode: override color with cluster-based coloring (Nanite-style)
-	if (DebugMode > 0)
+	if (DebugMode == 1)
 	{
+		// Mode 1: Random cluster colors - each cluster gets a unique color
 		color.rgb = HashToColor(viewData.ClusterID);
-		// Keep alpha at a reasonable value for visibility
+		color.a = max(color.a, 0.8);
+	}
+	else if (DebugMode == 2)
+	{
+		// Mode 2: LOD level brightness - dark blue = leaf (level 0), bright yellow = higher LOD
+		uint lodLevel = viewData.Padding;
+		float t = saturate(float(lodLevel) / 5.0);  // ~5 levels typical in hierarchy
+		color.rgb = lerp(float3(0.05, 0.05, 0.2), float3(1.0, 1.0, 0.3), t);
 		color.a = max(color.a, 0.8);
 	}
 

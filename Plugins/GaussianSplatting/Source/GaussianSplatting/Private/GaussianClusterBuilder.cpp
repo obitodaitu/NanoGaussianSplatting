@@ -85,14 +85,8 @@ bool FGaussianClusterBuilder::BuildClusterHierarchy(
 		CurrentLevel = MoveTemp(ParentLevel);
 	}
 
-	// Step 5: Calculate error metrics for all non-leaf clusters
-	for (FGaussianCluster& Cluster : AllClusters)
-	{
-		if (!Cluster.IsLeaf())
-		{
-			CalculateClusterError(Cluster, AllClusters);
-		}
-	}
+	// Step 5: Error metrics are computed during LOD generation (Step 6)
+	// MaxError is set based on actual merge displacement, not cluster radius
 
 	// Store results
 	OutHierarchy.Clusters = MoveTemp(AllClusters);
@@ -105,10 +99,38 @@ bool FGaussianClusterBuilder::BuildClusterHierarchy(
 	UE_LOG(LogTemp, Log, TEXT("  Root cluster index: %d"), OutHierarchy.RootClusterIndex);
 
 	// Step 6: Generate LOD splats for non-leaf clusters
+	// This also computes MaxError based on actual merge displacement
 	if (Settings.bGenerateLOD && OutHierarchy.NumLODLevels > 1)
 	{
 		GenerateLODSplats(InOutSplats, OutHierarchy, Settings.LODReductionRatio);
 		UE_LOG(LogTemp, Log, TEXT("  Generated %d LOD splats"), OutHierarchy.TotalLODSplatCount);
+
+		// Log error metrics per LOD level for debugging
+		for (uint32 Level = 1; Level <= OutHierarchy.NumLODLevels; Level++)
+		{
+			float MinError = MAX_FLT, MaxError = 0.0f, SumError = 0.0f;
+			float MinRadius = MAX_FLT, MaxRadius = 0.0f, SumRadius = 0.0f;
+			int32 Count = 0;
+			for (const FGaussianCluster& C : OutHierarchy.Clusters)
+			{
+				if (C.LODLevel == Level)
+				{
+					MinError = FMath::Min(MinError, C.MaxError);
+					MaxError = FMath::Max(MaxError, C.MaxError);
+					SumError += C.MaxError;
+					MinRadius = FMath::Min(MinRadius, C.BoundingSphereRadius);
+					MaxRadius = FMath::Max(MaxRadius, C.BoundingSphereRadius);
+					SumRadius += C.BoundingSphereRadius;
+					Count++;
+				}
+			}
+			if (Count > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("  LOD Level %d: MaxError min=%.2f avg=%.2f max=%.2f, Radius min=%.2f avg=%.2f max=%.2f (%d clusters)"),
+					Level, MinError, SumError / Count, MaxError,
+					MinRadius, SumRadius / Count, MaxRadius, Count);
+			}
+		}
 	}
 
 	return true;
@@ -312,37 +334,35 @@ void FGaussianClusterBuilder::CalculateClusterError(
 	FGaussianCluster& ParentCluster,
 	const TArray<FGaussianCluster>& AllClusters)
 {
-	// Error metric: maximum distance from parent center to any child's bounding sphere surface
-	// This represents the worst-case error if we render the parent's LOD instead of children
+	// Error metric: use parent's bounding sphere radius, ensuring monotonic increase up the tree.
+	//
+	// The bounding sphere radius represents the spatial extent being simplified by LOD splats.
+	// Larger clusters cover more space, so they have more potential visual error.
+	// This naturally increases up the tree (parent radius >= any child radius).
+	//
+	// The projected error formula: projectedError = (MaxError / distance) * ScreenHeight * 0.5
+	// - Near the camera: projectedError is large → use leaf clusters (finest detail)
+	// - Far from camera: projectedError is small → accept parent LOD (coarser but cheaper)
+	//
+	// Ensuring monotonic increase (parent error > max child error) guarantees that the LOD
+	// walk-up in ClusterCulling never skips a level — if a parent's error is acceptable,
+	// all its children's errors are also acceptable.
 
-	float MaxError = 0.0f;
-
+	float MaxChildError = 0.0f;
 	for (uint32 ChildID : ParentCluster.ChildClusterIDs)
 	{
-		// Find child cluster
 		for (const FGaussianCluster& Child : AllClusters)
 		{
 			if (Child.ClusterID == ChildID)
 			{
-				// Distance from parent center to child center
-				float CenterDistance = FVector3f::Dist(
-					ParentCluster.BoundingSphereCenter,
-					Child.BoundingSphereCenter);
-
-				// Add child's radius to get distance to furthest point
-				float TotalDistance = CenterDistance + Child.BoundingSphereRadius;
-
-				// Also consider child's own error (propagate error up the tree)
-				TotalDistance += Child.MaxError;
-
-				MaxError = FMath::Max(MaxError, TotalDistance);
+				MaxChildError = FMath::Max(MaxChildError, Child.MaxError);
 				break;
 			}
 		}
 	}
 
-	// Subtract parent's radius since error is relative to parent's representation
-	ParentCluster.MaxError = FMath::Max(0.0f, MaxError - ParentCluster.BoundingSphereRadius);
+	// Use parent's bounding sphere radius as error, but ensure strictly greater than any child's error
+	ParentCluster.MaxError = FMath::Max(ParentCluster.BoundingSphereRadius, MaxChildError + SMALL_NUMBER);
 }
 
 //----------------------------------------------------------------------
@@ -522,6 +542,7 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 	UE_LOG(LogTemp, Log, TEXT("GenerateLODSplats: Generating LOD splats with reduction ratio %d"), ReductionRatio);
 
 	// Process clusters by LOD level (bottom-up)
+	// Also compute MaxError based on actual merge displacement
 	for (uint32 LODLevel = 1; LODLevel <= Hierarchy.NumLODLevels; LODLevel++)
 	{
 		for (FGaussianCluster& Cluster : Hierarchy.Clusters)
@@ -533,6 +554,9 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 
 			// This cluster needs LOD splats
 			Cluster.LODSplatStartIndex = NextLODSplatIndex;
+
+			// Track max displacement across all merge groups for error metric
+			float ClusterMaxDisplacement = 0.0f;
 
 			if (LODLevel == 1)
 			{
@@ -551,28 +575,45 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 						FGaussianLODSplat MergedSplat = MergeGaussians(Splats, SrcStart, SrcCount);
 						Hierarchy.LODSplats.Add(MergedSplat);
 						NextLODSplatIndex++;
+
+						// Compute max displacement: how far each source splat is from the merged centroid
+						for (int32 j = 0; j < SrcCount; j++)
+						{
+							float Displacement = FVector3f::Dist(Splats[SrcStart + j].Position, MergedSplat.Position);
+							ClusterMaxDisplacement = FMath::Max(ClusterMaxDisplacement, Displacement);
+						}
 					}
 				}
 
 				Cluster.LODSplatCount = NextLODSplatIndex - Cluster.LODSplatStartIndex;
+
+				// MaxError = actual merge displacement, floored at half the bounding sphere radius
+				// The floor prevents dense clusters (tiny displacement) from selecting LOD too early
+				Cluster.MaxError = FMath::Max(ClusterMaxDisplacement, Cluster.BoundingSphereRadius * 0.5f);
 			}
 			else
 			{
 				// Higher LOD levels - merge from children's LOD splats
 				TArray<FGaussianLODSplat> ChildLODSplats;
 
+				// Also find max child error for compound error propagation
+				float MaxChildError = 0.0f;
 				for (uint32 ChildID : Cluster.ChildClusterIDs)
 				{
 					for (const FGaussianCluster& Child : Hierarchy.Clusters)
 					{
-						if (Child.ClusterID == ChildID && Child.LODSplatCount > 0)
+						if (Child.ClusterID == ChildID)
 						{
-							for (uint32 j = 0; j < Child.LODSplatCount; j++)
+							MaxChildError = FMath::Max(MaxChildError, Child.MaxError);
+							if (Child.LODSplatCount > 0)
 							{
-								uint32 LODIndex = Child.LODSplatStartIndex + j;
-								if (LODIndex < (uint32)Hierarchy.LODSplats.Num())
+								for (uint32 j = 0; j < Child.LODSplatCount; j++)
 								{
-									ChildLODSplats.Add(Hierarchy.LODSplats[LODIndex]);
+									uint32 LODIndex = Child.LODSplatStartIndex + j;
+									if (LODIndex < (uint32)Hierarchy.LODSplats.Num())
+									{
+										ChildLODSplats.Add(Hierarchy.LODSplats[LODIndex]);
+									}
 								}
 							}
 							break;
@@ -595,11 +636,22 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 							FGaussianLODSplat MergedSplat = MergeLODSplats(ChildLODSplats, SrcStart, SrcCount);
 							Hierarchy.LODSplats.Add(MergedSplat);
 							NextLODSplatIndex++;
+
+							// Compute max displacement from source LOD splats to merged centroid
+							for (int32 j = 0; j < SrcCount; j++)
+							{
+								float Displacement = FVector3f::Dist(ChildLODSplats[SrcStart + j].Position, MergedSplat.Position);
+								ClusterMaxDisplacement = FMath::Max(ClusterMaxDisplacement, Displacement);
+							}
 						}
 					}
 
 					Cluster.LODSplatCount = NextLODSplatIndex - Cluster.LODSplatStartIndex;
 				}
+
+				// Compound error: this level's merge displacement + worst child error
+				// Floored at half the bounding sphere radius (same as level 1)
+				Cluster.MaxError = FMath::Max(ClusterMaxDisplacement + MaxChildError, Cluster.BoundingSphereRadius * 0.5f);
 			}
 		}
 	}

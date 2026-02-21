@@ -294,6 +294,8 @@ public:
 	float CachedOpacityScale = -1.0f;
 	float CachedSplatScale = -1.0f;
 	bool CachedHasColorTexture = false;
+	float CachedErrorThreshold = -1.0f;
+	int32 CachedDebugMode = -1;
 	bool bHasCachedSortData = false;
 };
 

@@ -54,12 +54,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Get cluster index for this splat (used for debug visualization and culling)
 	uint leafClusterIndex = 0;
 	uint selectedClusterID = 0;  // The cluster selected for visualization (may be parent if LOD is used)
+	uint selectedLODLevel = 0;   // LOD level of selected cluster (0=leaf, higher=coarser)
 	if (UseClusterCulling)
 	{
 		leafClusterIndex = SplatClusterIndexBuffer[splatIndex];
-		// Get the selected cluster ID from the LOD selection (Nanite-style)
-		// This maps from leaf cluster to the actually selected cluster based on screen-space error
-		selectedClusterID = SelectedClusterBuffer[leafClusterIndex];
+		// Get the selected cluster ID and LOD level from the LOD selection (Nanite-style)
+		// Lower 24 bits = cluster ID, upper 8 bits = LOD level (packed by ClusterCulling)
+		uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
+		selectedClusterID = packedSelected & 0x00FFFFFF;
+		selectedLODLevel = (packedSelected >> 24) & 0xFF;
 
 		if (!IsClusterVisible(leafClusterIndex))
 		{
@@ -73,7 +76,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = 0;
+			viewData.Padding = selectedLODLevel;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
 		}
@@ -90,7 +93,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = 0;
+			viewData.Padding = selectedLODLevel;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
 		}
@@ -141,7 +144,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.Axis1 = float2(0, 0);
 		viewData.Axis2 = float2(0, 0);
 		viewData.ClusterID = selectedClusterID;
-		viewData.Padding = 0;
+		viewData.Padding = selectedLODLevel;
 		ViewDataBuffer[splatIndex] = viewData;
 		return;
 	}
@@ -214,7 +217,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = 0;
+			viewData.Padding = selectedLODLevel;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
 		}
@@ -270,7 +273,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewData.Axis1 = axis1;
 	viewData.Axis2 = axis2;
 	viewData.ClusterID = selectedClusterID;
-	viewData.Padding = 0;
+	viewData.Padding = selectedLODLevel;
 
 	ViewDataBuffer[splatIndex] = viewData;
 }

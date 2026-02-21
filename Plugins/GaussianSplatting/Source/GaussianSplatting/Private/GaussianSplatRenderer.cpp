@@ -18,6 +18,7 @@
 
 // Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
+extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
 extern TAutoConsoleVariable<int32> CVarUseLODRendering;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
@@ -63,12 +64,16 @@ void FGaussianSplatRenderer::Render(
 
 	// Camera-static sort skipping: skip entire compute pipeline when nothing has changed
 	FMatrix CurrentVP = View.ViewMatrices.GetViewProjectionMatrix();
+	float CurrentErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
+	int32 CurrentDebugMode = CVarShowClusterBounds.GetValueOnRenderThread();
 	bool bCanSkipCompute = GPUResources->bHasCachedSortData &&
 		GPUResources->CachedViewProjectionMatrix.Equals(CurrentVP, 0.0f) &&
 		GPUResources->CachedLocalToWorld.Equals(LocalToWorld, 0.0f) &&
 		GPUResources->CachedOpacityScale == OpacityScale &&
 		GPUResources->CachedSplatScale == SplatScale &&
-		GPUResources->CachedHasColorTexture == bHasColorTexture;
+		GPUResources->CachedHasColorTexture == bHasColorTexture &&
+		GPUResources->CachedErrorThreshold == CurrentErrorThreshold &&
+		GPUResources->CachedDebugMode == CurrentDebugMode;
 
 	// Check if LOD rendering is enabled
 	// GPU-driven LOD rendering: no CPU readback, all processing done on GPU
@@ -111,6 +116,8 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedOpacityScale = OpacityScale;
 		GPUResources->CachedSplatScale = SplatScale;
 		GPUResources->CachedHasColorTexture = bHasColorTexture;
+		GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
+		GPUResources->CachedDebugMode = CurrentDebugMode;
 		GPUResources->bHasCachedSortData = true;
 	}
 
@@ -528,6 +535,7 @@ void FGaussianSplatRenderer::DispatchCalcLODViewDataGPUDriven(
 	Parameters.LODSplatBuffer = GPUResources->LODSplatBufferSRV;
 	Parameters.LODSplatClusterIndexBuffer = GPUResources->LODSplatClusterIndexBufferSRV;
 	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
+	Parameters.ClusterBuffer = GPUResources->ClusterBufferSRV;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 	Parameters.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
 
@@ -551,6 +559,7 @@ void FGaussianSplatRenderer::DispatchCalcLODViewDataGPUDriven(
 	Parameters.OutputStartIndex = GPUResources->GetSplatCount();  // Write after original splats
 	Parameters.SplatScale = SplatScale;
 	Parameters.OpacityScale = OpacityScale;
+	Parameters.ClusterCount = GPUResources->ClusterCount;
 
 	// Dispatch compute shader
 	const uint32 ThreadGroupSize = 256;
@@ -776,7 +785,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 		FIntRect ViewRect = View.UnscaledViewRect;
 		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
-		CullingParams.ErrorThreshold = 1.0f;  // 1 pixel error threshold for LOD selection
+		CullingParams.ErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 

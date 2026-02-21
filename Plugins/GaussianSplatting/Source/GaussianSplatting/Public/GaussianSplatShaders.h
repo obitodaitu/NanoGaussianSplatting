@@ -74,6 +74,7 @@ class FGaussianSplatCalcLODViewDataGPUDrivenCS : public FGlobalShader
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPULODSplat>, LODSplatBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODSplatClusterIndexBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODClusterSelectedBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPUCluster>, ClusterBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatOutputCountBuffer)
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
@@ -85,6 +86,7 @@ class FGaussianSplatCalcLODViewDataGPUDrivenCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, OutputStartIndex)
 		SHADER_PARAMETER(float, SplatScale)
 		SHADER_PARAMETER(float, OpacityScale)
+		SHADER_PARAMETER(uint32, ClusterCount)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

@@ -16,6 +16,10 @@ StructuredBuffer<uint> LODSplatClusterIndexBuffer;
 // Written by ClusterCulling, bit set = cluster's LOD splats should be rendered
 StructuredBuffer<uint> LODClusterSelectedBitmap;
 
+// Input: Cluster data for LOD level lookup (debug visualization)
+StructuredBuffer<FGaussianGPUCluster> ClusterBuffer;
+uint ClusterCount;
+
 // Output: View data for rendering
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 
@@ -55,6 +59,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Lookup which cluster owns this LOD splat
 	uint clusterID = LODSplatClusterIndexBuffer[lodSplatIndex];
 
+	// Get LOD level for debug visualization
+	uint lodLevel = (clusterID < ClusterCount) ? ClusterBuffer[clusterID].LODLevel : 0;
+
 	// Atomically reserve an output slot
 	// We always write something (valid or invalid) to maintain consistent output
 	uint outputSlot;
@@ -72,7 +79,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.Axis1 = float2(0, 0);
 		viewData.Axis2 = float2(0, 0);
 		viewData.ClusterID = clusterID;
-		viewData.Padding = 0;
+		viewData.Padding = lodLevel;
 		ViewDataBuffer[outputIndex] = viewData;
 		return;
 	}
@@ -104,7 +111,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.Axis1 = float2(0, 0);
 		viewData.Axis2 = float2(0, 0);
 		viewData.ClusterID = clusterID;
-		viewData.Padding = 0;
+		viewData.Padding = lodLevel;
 		ViewDataBuffer[outputIndex] = viewData;
 		return;
 	}
@@ -167,7 +174,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = clusterID;
-			viewData.Padding = 0;
+			viewData.Padding = lodLevel;
 			ViewDataBuffer[outputIndex] = viewData;
 			return;
 		}
@@ -185,7 +192,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewData.Axis1 = axis1;
 	viewData.Axis2 = axis2;
 	viewData.ClusterID = clusterID;  // Use cluster ID for debug visualization
-	viewData.Padding = 0;
+	viewData.Padding = lodLevel;
 
 	ViewDataBuffer[outputIndex] = viewData;
 }

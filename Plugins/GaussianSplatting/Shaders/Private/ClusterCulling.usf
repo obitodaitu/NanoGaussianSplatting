@@ -204,8 +204,13 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 		FGaussianGPUCluster parentCluster = ClusterBuffer[currentCluster.ParentIndex];
 
+		// Floor MaxError at half the bounding sphere radius to prevent dense clusters
+		// (with tiny merge displacement) from selecting LOD when too close to camera.
+		// This ensures LOD only kicks in when the cluster projects to < ~64px radius.
+		float effectiveError = max(parentCluster.MaxError, parentCluster.BoundingSphere.w * 0.5);
+
 		// Calculate projected error for parent cluster
-		float projectedError = CalculateProjectedError(parentCluster.MaxError * maxScale, distanceToCamera);
+		float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
 
 		// Apply LOD bias (positive = prefer coarser LOD)
 		projectedError = projectedError * exp(-LODBias * 0.1);
@@ -242,7 +247,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// Write selected cluster ID for Nanite-style debug visualization
 	// This maps the leaf cluster to its selected cluster (may be a parent if LOD is used)
-	SelectedClusterBuffer[clusterIndex] = selectedClusterID;
+	// Pack LOD level into upper 8 bits for debug visualization (DebugMode 2)
+	uint selectedLODLevel = ClusterBuffer[selectedClusterID].LODLevel;
+	SelectedClusterBuffer[clusterIndex] = (selectedClusterID & 0x00FFFFFF) | ((selectedLODLevel & 0xFF) << 24);
 
 	// LOD Rendering: Track unique parent clusters that need their LOD splats rendered
 	// Only when LOD rendering is enabled and a parent cluster was selected
