@@ -13,133 +13,35 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	int32 Version = 1;  // Default to V1 for old assets
+	int32 Magic = GAUSSIAN_SPLAT_ASSET_MAGIC;
+	int32 Version = GAUSSIAN_SPLAT_ASSET_VERSION;
+	Ar << Magic;
+	Ar << Version;
 
-	if (Ar.IsSaving())
+	if (Ar.IsLoading() && (Magic != GAUSSIAN_SPLAT_ASSET_MAGIC || Version != GAUSSIAN_SPLAT_ASSET_VERSION))
 	{
-		// When saving, write magic + version header
-		int32 Magic = GAUSSIAN_SPLAT_ASSET_MAGIC;
-		Version = GAUSSIAN_SPLAT_ASSET_VERSION;
-		Ar << Magic;
-		Ar << Version;
-	}
-	else if (Ar.IsLoading())
-	{
-		// When loading, check for magic header to detect version
-		int32 FirstValue = 0;
-		Ar << FirstValue;
-
-		if (FirstValue == GAUSSIAN_SPLAT_ASSET_MAGIC)
-		{
-			// New format with magic header
-			Ar << Version;
-		}
-		else
-		{
-			// Old V1 format - FirstValue is actually SplatCount
-			Version = 1;
-			SplatCount = FirstValue;
-		}
+		UE_LOG(LogTemp, Error, TEXT("GaussianSplatAsset: Incompatible asset format (Magic=0x%08X, Version=%d). Please reimport the asset."), Magic, Version);
+		return;
 	}
 
-	if (Version >= 2)
-	{
-		// Version 2+: Read/write metadata normally
-		Ar << SplatCount;
-		Ar << BoundingBox;
-		Ar << PositionFormat;
-		Ar << ColorFormat;
-		Ar << SHFormat;
-		Ar << SHBands;
-		Ar << SourceFilePath;
-		Ar << ImportQuality;
-		Ar << ColorTextureWidth;
-		Ar << ColorTextureHeight;
-		Ar << ChunkData;
+	Ar << SplatCount;
+	Ar << BoundingBox;
+	Ar << PositionFormat;
+	Ar << ColorFormat;
+	Ar << SHFormat;
+	Ar << SHBands;
+	Ar << SourceFilePath;
+	Ar << ImportQuality;
+	Ar << ColorTextureWidth;
+	Ar << ColorTextureHeight;
+	Ar << ChunkData;
 
-		// Use bulk data for large arrays
-		// These are stored in separate .ubulk files and can be memory-mapped
-		PositionBulkData.Serialize(Ar, this);
-		OtherBulkData.Serialize(Ar, this);
-		SHBulkData.Serialize(Ar, this);
-		ColorTextureBulkData.Serialize(Ar, this);
+	PositionBulkData.Serialize(Ar, this);
+	OtherBulkData.Serialize(Ar, this);
+	SHBulkData.Serialize(Ar, this);
+	ColorTextureBulkData.Serialize(Ar, this);
 
-		// Version 3+: Cluster hierarchy for Nanite-style optimization
-		if (Version >= 3)
-		{
-			Ar << bHasClusterHierarchy;
-			Ar << ClusterHierarchy;
-		}
-		else if (Ar.IsLoading())
-		{
-			// Legacy V2 assets don't have cluster hierarchy
-			bHasClusterHierarchy = false;
-			ClusterHierarchy.Reset();
-		}
-	}
-	else
-	{
-		// Version 1: Legacy TArray format
-		// Note: SplatCount was already read above as FirstValue
-		Ar << BoundingBox;
-		Ar << PositionFormat;
-		Ar << ColorFormat;
-		Ar << SHFormat;
-		Ar << SHBands;
-
-		TArray<uint8> LegacyPositionData;
-		TArray<uint8> LegacyOtherData;
-		TArray<uint8> LegacySHData;
-		TArray<uint8> LegacyColorTextureData;
-
-		Ar << LegacyPositionData;
-		Ar << LegacyOtherData;
-		Ar << LegacySHData;
-		Ar << ChunkData;
-		Ar << SourceFilePath;
-		Ar << ImportQuality;
-		Ar << LegacyColorTextureData;
-		Ar << ColorTextureWidth;
-		Ar << ColorTextureHeight;
-
-		if (Ar.IsLoading())
-		{
-			// Convert legacy data to bulk data
-			if (LegacyPositionData.Num() > 0)
-			{
-				PositionBulkData.Lock(LOCK_READ_WRITE);
-				void* Data = PositionBulkData.Realloc(LegacyPositionData.Num());
-				FMemory::Memcpy(Data, LegacyPositionData.GetData(), LegacyPositionData.Num());
-				PositionBulkData.Unlock();
-			}
-
-			if (LegacyOtherData.Num() > 0)
-			{
-				OtherBulkData.Lock(LOCK_READ_WRITE);
-				void* Data = OtherBulkData.Realloc(LegacyOtherData.Num());
-				FMemory::Memcpy(Data, LegacyOtherData.GetData(), LegacyOtherData.Num());
-				OtherBulkData.Unlock();
-			}
-
-			if (LegacySHData.Num() > 0)
-			{
-				SHBulkData.Lock(LOCK_READ_WRITE);
-				void* Data = SHBulkData.Realloc(LegacySHData.Num());
-				FMemory::Memcpy(Data, LegacySHData.GetData(), LegacySHData.Num());
-				SHBulkData.Unlock();
-			}
-
-			if (LegacyColorTextureData.Num() > 0)
-			{
-				ColorTextureBulkData.Lock(LOCK_READ_WRITE);
-				void* Data = ColorTextureBulkData.Realloc(LegacyColorTextureData.Num());
-				FMemory::Memcpy(Data, LegacyColorTextureData.GetData(), LegacyColorTextureData.Num());
-				ColorTextureBulkData.Unlock();
-			}
-
-			UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Converted legacy v1 asset to v2 bulk data format"));
-		}
-	}
+	Ar << ClusterHierarchy;
 }
 
 void UGaussianSplatAsset::PostLoad()
@@ -185,7 +87,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	}
 
 	// Cluster hierarchy memory
-	if (bHasClusterHierarchy)
+	if (ClusterHierarchy.IsValid())
 	{
 		TotalBytes += ClusterHierarchy.Clusters.Num() * sizeof(FGaussianCluster);
 		// Account for dynamic arrays within clusters (ChildClusterIDs)

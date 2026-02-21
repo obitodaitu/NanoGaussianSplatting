@@ -9,12 +9,9 @@
 #include "GaussianClusterTypes.h"
 #include "GaussianSplatAsset.generated.h"
 
-// Asset version for backward compatibility
+// Serialization magic/version for format identification
+#define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
 #define GAUSSIAN_SPLAT_ASSET_VERSION 3
-#define GAUSSIAN_SPLAT_ASSET_MAGIC 0x47535056  // "GSPV" - Gaussian Splat Version marker
-// Version 1: Original TArray<uint8> serialization (no magic/version header)
-// Version 2: FByteBulkData for large arrays (positions, other, SH, color texture)
-// Version 3: Added cluster hierarchy for Nanite-style LOD and culling
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -54,7 +51,7 @@ public:
 
 	/** Check if cluster hierarchy is available */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
-	bool HasClusterHierarchy() const { return bHasClusterHierarchy && ClusterHierarchy.IsValid(); }
+	bool HasClusterHierarchy() const { return ClusterHierarchy.IsValid(); }
 
 	/** Get number of clusters in hierarchy */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
@@ -134,10 +131,6 @@ public:
 	 */
 	UPROPERTY()
 	FGaussianClusterHierarchy ClusterHierarchy;
-
-	/** Whether cluster hierarchy has been built for this asset */
-	UPROPERTY(VisibleAnywhere, Category = "Clustering")
-	bool bHasClusterHierarchy = false;
 
 public:
 	/**

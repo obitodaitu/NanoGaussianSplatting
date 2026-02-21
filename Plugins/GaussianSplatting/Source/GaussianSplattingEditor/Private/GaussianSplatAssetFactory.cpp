@@ -188,11 +188,9 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	{
 		SlowTask.EnterProgressFrame(5.0f, FText::FromString(TEXT("Storing cluster hierarchy...")));
 		Asset->ClusterHierarchy = MoveTemp(ClusterHierarchy);
-		Asset->bHasClusterHierarchy = true;
 	}
 	else
 	{
-		Asset->bHasClusterHierarchy = false;
 		Asset->ClusterHierarchy.Reset();
 	}
 
