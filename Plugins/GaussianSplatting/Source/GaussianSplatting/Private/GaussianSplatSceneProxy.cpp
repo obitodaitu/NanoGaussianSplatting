@@ -871,23 +871,6 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 {
 	bWillEverBeLit = false;
-
-	// Cache cluster data for debug visualization
-	if (CachedAsset && CachedAsset->HasClusterHierarchy())
-	{
-		const FGaussianClusterHierarchy& Hierarchy = CachedAsset->GetClusterHierarchy();
-		DebugClusterData.Reserve(Hierarchy.Clusters.Num());
-
-		for (const FGaussianCluster& Cluster : Hierarchy.Clusters)
-		{
-			FDebugClusterInfo Info;
-			Info.Center = FVector(Cluster.BoundingSphereCenter.X, Cluster.BoundingSphereCenter.Y, Cluster.BoundingSphereCenter.Z);
-			Info.Radius = Cluster.BoundingSphereRadius;
-			Info.LODLevel = Cluster.LODLevel;
-			Info.SplatCount = Cluster.SplatCount;
-			DebugClusterData.Add(Info);
-		}
-	}
 }
 
 FGaussianSplatSceneProxy::~FGaussianSplatSceneProxy()
@@ -925,30 +908,17 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	// Check if cluster debug visualization is enabled
-	const int32 ShowClusterBounds = CVarShowClusterBounds.GetValueOnRenderThread();
-
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		if (VisibilityMap & (1 << ViewIndex))
 		{
 			FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
-			const FSceneView* View = Views[ViewIndex];
 
 			// Draw bounds when selected
 			if (IsSelected())
 			{
 				RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
 			}
-
-			// Note: Cluster debug visualization is now handled in the shader (Nanite-style)
-			// The old DrawClusterDebug() drew wireframe spheres which caused severe performance issues
-			// Now gs.ShowClusterBounds colors the splats directly by cluster ID (essentially free)
-			// Old code kept for reference but disabled:
-			// if (ShowClusterBounds > 0)
-			// {
-			// 	DrawClusterDebug(PDI, View);
-			// }
 		}
 	}
 }
@@ -1062,84 +1032,3 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 	}
 }
 
-void FGaussianSplatSceneProxy::DrawClusterDebug(FPrimitiveDrawInterface* PDI, const FSceneView* View) const
-{
-	if (DebugClusterData.Num() == 0)
-	{
-		return;
-	}
-
-	const int32 ShowClusterBounds = CVarShowClusterBounds.GetValueOnRenderThread();
-	const FMatrix LocalToWorldMatrix = GetLocalToWorld();
-
-	// Define colors for different LOD levels
-	static const FLinearColor LODColors[] = {
-		FLinearColor::Green,   // LOD 0 (leaf clusters)
-		FLinearColor::Yellow,  // LOD 1
-		FLinearColor(1.0f, 0.5f, 0.0f),  // LOD 2 (orange)
-		FLinearColor::Red,     // LOD 3
-		FLinearColor(0.5f, 0.0f, 0.5f),  // LOD 4 (purple)
-		FLinearColor::Blue,    // LOD 5+
-	};
-	const int32 NumLODColors = UE_ARRAY_COUNT(LODColors);
-
-	for (const FDebugClusterInfo& ClusterInfo : DebugClusterData)
-	{
-		// Mode 1: Show only leaf clusters (LOD 0)
-		// Mode 2: Show all clusters
-		if (ShowClusterBounds == 1 && ClusterInfo.LODLevel > 0)
-		{
-			continue;
-		}
-
-		// Transform cluster center to world space
-		FVector WorldCenter = LocalToWorldMatrix.TransformPosition(ClusterInfo.Center);
-
-		// Scale radius by transform (approximate, use max scale component)
-		FVector Scale = LocalToWorldMatrix.GetScaleVector();
-		float WorldRadius = ClusterInfo.Radius * Scale.GetMax();
-
-		// Frustum cull debug spheres for performance
-		if (!View->ViewFrustum.IntersectSphere(WorldCenter, WorldRadius))
-		{
-			continue;
-		}
-
-		// Select color based on LOD level
-		int32 ColorIndex = FMath::Min((int32)ClusterInfo.LODLevel, NumLODColors - 1);
-		FLinearColor Color = LODColors[ColorIndex];  
-
-		// Draw wireframe sphere using circle approximation
-		const int32 NumSegments = 16;
-		const float AngleStep = 2.0f * PI / NumSegments;
-
-		// Draw three orthogonal circles (XY, XZ, YZ planes)
-		for (int32 Plane = 0; Plane < 3; Plane++)
-		{
-			for (int32 i = 0; i < NumSegments; i++)
-			{
-				float Angle1 = i * AngleStep;
-				float Angle2 = (i + 1) * AngleStep;
-
-				FVector P1, P2;
-				switch (Plane)
-				{
-				case 0: // XY plane
-					P1 = WorldCenter + FVector(FMath::Cos(Angle1), FMath::Sin(Angle1), 0.0f) * WorldRadius;
-					P2 = WorldCenter + FVector(FMath::Cos(Angle2), FMath::Sin(Angle2), 0.0f) * WorldRadius;
-					break;
-				case 1: // XZ plane
-					P1 = WorldCenter + FVector(FMath::Cos(Angle1), 0.0f, FMath::Sin(Angle1)) * WorldRadius;
-					P2 = WorldCenter + FVector(FMath::Cos(Angle2), 0.0f, FMath::Sin(Angle2)) * WorldRadius;
-					break;
-				case 2: // YZ plane
-					P1 = WorldCenter + FVector(0.0f, FMath::Cos(Angle1), FMath::Sin(Angle1)) * WorldRadius;
-					P2 = WorldCenter + FVector(0.0f, FMath::Cos(Angle2), FMath::Sin(Angle2)) * WorldRadius;
-					break;
-				}
-
-				PDI->DrawLine(P1, P2, Color, SDPG_World, 1.0f);
-			}
-		}
-	}
-}

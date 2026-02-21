@@ -13,9 +13,6 @@
 class UGaussianSplatComponent;
 class UGaussianSplatAsset;
 
-// Console variable declarations (defined in GaussianSplatting.cpp)
-extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
-extern TAutoConsoleVariable<int32> CVarShowClusterStats;
 
 /**
  * GPU resources for Gaussian Splatting rendering
@@ -338,9 +335,6 @@ public:
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
 
-	/** Draw cluster debug visualization */
-	void DrawClusterDebug(FPrimitiveDrawInterface* PDI, const FSceneView* View) const;
-
 private:
 	/** GPU resources */
 	FGaussianSplatGPUResources* GPUResources = nullptr;
@@ -355,13 +349,4 @@ private:
 	float SplatScale = 1.0f;
 	bool bEnableFrustumCulling = true;
 
-	/** Cached cluster data for debug visualization (CPU-side copy) */
-	struct FDebugClusterInfo
-	{
-		FVector Center;
-		float Radius;
-		uint32 LODLevel;
-		uint32 SplatCount;
-	};
-	TArray<FDebugClusterInfo> DebugClusterData;
 };
