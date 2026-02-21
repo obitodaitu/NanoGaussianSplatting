@@ -36,7 +36,7 @@ public:
 		/** Whether to generate LOD splats for parent clusters */
 		bool bGenerateLOD = true;
 
-		/** LOD reduction ratio - how many original splats per LOD splat (default: 4) */
+		/** LOD reduction ratio - how many original splats per LOD splat (default: divide by 4) */
 		int32 LODReductionRatio = 4;
 
 		FBuildSettings() = default;
