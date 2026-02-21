@@ -62,42 +62,6 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 };
 
 /**
- * Compute shader for calculating view-dependent data for LOD splats
- * Simplified version without SH evaluation - uses pre-computed colors
- */
-class FGaussianSplatCalcLODViewDataCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FGaussianSplatCalcLODViewDataCS);
-	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCalcLODViewDataCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPULODSplat>, LODSplatBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
-		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
-		SHADER_PARAMETER(FMatrix44f, WorldToClip)
-		SHADER_PARAMETER(FMatrix44f, WorldToView)
-		SHADER_PARAMETER(FVector2f, ScreenSize)
-		SHADER_PARAMETER(FVector2f, FocalLength)
-		SHADER_PARAMETER(uint32, LODSplatStartIndex)
-		SHADER_PARAMETER(uint32, LODSplatCount)
-		SHADER_PARAMETER(uint32, OutputStartIndex)
-		SHADER_PARAMETER(float, SplatScale)
-		SHADER_PARAMETER(float, OpacityScale)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
-	}
-};
-
-/**
  * Compute shader for GPU-driven LOD splat processing
  * Processes ALL LOD splats on GPU, rejects non-selected ones - no CPU readback needed
  */

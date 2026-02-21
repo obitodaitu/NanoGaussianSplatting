@@ -95,40 +95,6 @@ public:
 	);
 
 	/**
-	 * Dispatch LOD view data calculation compute shader
-	 * Processes LOD splats for clusters that use simplified representations
-	 *
-	 * @param LODSplatStartIndex Start index in LOD splat buffer
-	 * @param LODSplatCount Number of LOD splats to process
-	 * @param OutputStartIndex Start index in ViewDataBuffer (appends after regular splats)
-	 */
-	static void DispatchCalcLODViewData(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		uint32 LODSplatStartIndex,
-		uint32 LODSplatCount,
-		uint32 OutputStartIndex,
-		float OpacityScale,
-		float SplatScale
-	);
-
-	/**
-	 * Dispatch LOD splat rendering for all selected LOD clusters
-	 * Reads the LOD cluster list from the GPU, processes each cluster's LOD splats
-	 * DEPRECATED: Use DispatchCalcLODViewDataGPUDriven instead
-	 */
-	static void DispatchLODSplatRendering(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		float OpacityScale,
-		float SplatScale
-	);
-
-	/**
 	 * Dispatch GPU-driven LOD view data calculation
 	 * Processes ALL LOD splats on GPU, rejects non-selected ones - no CPU readback needed
 	 */
