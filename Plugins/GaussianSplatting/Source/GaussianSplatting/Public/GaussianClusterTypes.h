@@ -25,7 +25,7 @@ namespace GaussianClusterConstants
 
 /**
  * Simplified/merged splat data for LOD representation
- * Smaller than FGaussianSplatData - only stores essential rendering data
+ * Smaller than FGaussianSplatData - only stores essential rendering data(position, color, scale, opacity ¡X no SH)
  */
 USTRUCT()
 struct FGaussianLODSplat

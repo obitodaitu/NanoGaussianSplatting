@@ -1,0 +1,209 @@
+
+
+***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode > 現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
+***SH function目前是失敗的
+***可以學一下spark的LOD優化
+***目前cluster是以0.25倍做遞減
+***GS遠處的會覆蓋在近處的上面
+
+
+***一定會用GPU，有必要保留CPU的cluster type嗎? 應該不用，把他刪掉
+
+
+
+[Questions]
+	- 目前cluster顯示是錯的是為什麼?
+	- Nanite具體在做什麼? 再比對一次
+	- 目前debug cluster跟實際的Nanite渲染是分開的，這樣對嗎? 這樣cluster的意義是什麼?
+	- 聽起來LOD selection是正確的，只是debug模式並不會刪除點，但Nanite模式會刪除點
+	- 邏輯怪怪的，為什麼Nanite模式會刪除點? 不應該是很稀疏的點嗎?不至於刪除吧?
+	- GaussianClusterBuilder要深入跟AI讀一次，看他到底在幹嘛，確實有很大的機率是這裡錯了
+	- 使用debug模式2，目前看起來只有對一半
+	- 看起來是因為有一些點比較稀疏??
+	- 反正就是LOD不對
+
+
+***Process: Morton Code > Leaf Cluster > Parent Cluster > generate splats for non leaf cluster > runtime cluuing
+***每一個步驟都要搞懂他在幹嘛
+*Morton Code: 空間上相鄰的的點在Array上也相鄰。以空間相鄰的方式(Z line)，把所有的物件排進1D Array(處理起來比較快?比較有效地載入記憶體?是cache相關的)
+*Leaf Cluster: Morton Code算完之後接下來只是在1D Array上去切割分段 >每128個切一段
+*聽起來是有助於針對空間上一小塊一小塊相鄰的區域，載入記憶體。非原始順序相連，而是空間相連
+*所以Cluster的結構就叫做Bounding Volume Hierarchies(BVH) > 小群簇構成中群簇，中群簇構成大群簇
+*但他為什麼叫bounding volume?? 是因為這些cluster是由bounding box來決定的??
+*所以其實是先畫好Z再來討論點嗎?https://www.youtube.com/watch?v=8EoVmq8438A
+*我們用bounding box去做cluster grouping嗎?
+*但最原始的leaf cluster是怎麼來的?
+*Bounding Volume Hierarchies(BVH): https://www.youtube.com/watch?v=LAxHQZ8RjQ4
+*What is cache?
+*Morton Code這個算法本身就會弄出空間相鄰的1D array
+*算完的Morton Code會被存起來嗎?
+*leaf Cluster的screen space error 是0 
+AABB (Axis-Aligned Bounding Box) > box shape bounds
+Bounding Sphere > sphere shape bounds
+需要bounds的原因是之後要做frustum culling, screen space error
+
+
+
+
+*目前不知道cluster的資料到底長怎樣
+- 看起來是UGaussianSplatAsset有兩層Array, splat data 跟clustter data
+- position array
+- rotation array
+- color array
+- cluster怎麼被存起來的?
+- bounding box怎麼被存起來的?
+- 這些跟bulkdata有關嗎?
+- 還是說他是以整個class的方式安插進去?
+
+
+
+- So the Z shape is the result of encoded Morton code. We are not drawing Z shape as purpose
+
+這三者的關係是什麼?
+FGaussianCluster
+FGaussianLODSplat: data from PLY
+FGaussianClusterHierarchy
+
+This is an Unreal Engine plugin I created called "GaussianSplatting" "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting PLY file inside Unreal Engine.
+
+Currently I am creating a feature which will render gaussian splats based on the clusters.
+The idea was came from Unreal Engine's Nanite system.
+I don't want to render all the gaussian splat points.
+Instead, just render the gaussian splat points that is required for the details that can be seen from the screen.
+
+However currently the cluster system has some issue and I don't know where the issue came from.
+I want to do some investigation first.
+Can you explain how current's cluster system work?
+Especially how the file GaussianClusterBuilder and GaussianClusterTypes work.
+When we import a PLY file, what will we do to the file?
+
+
+
+最低階的cluster是怎麼形成的?
+高一階的cluster是怎麼形成的?
+FGaussianLODSplat > 這個具體怎麼被應用?
+所以其實只是在原始的ply資料上再架一層cluster的資料?
+cluster ID是幹嘛用的? 是怎麼形成的?
+還有一層LOD資料，這是幹嘛用的?
+
+point 的3D position轉Morton Code > 不懂這是怎麼形成的
+先有Morton Code再創建cluster? > 有點聽不懂 
+所以Morton Code是一種排序的方法?
+不知道Max Error是什麼
+
+
+所以最終點的數量會提高嗎?
+
+[potential]
+- Maybe we make the cluster decrease more dramatically so I can see the difference more obviously.
+- 必須narrow down > 吃掉太多token了
+- claude說是"CalculateClusterError in GaussianClusterBuilder.cpp:311-346", MaxError is always near-zero > 但為什麼顏色會有反應
+- 先分析一下claude說的有沒有合理
+
+
+先請cluade解釋一下目前的cluster邏輯
+	***現在很明顯就是cluster相關的東西錯了
+	- FGaussianLODSplat > 不知道要這個簡化版的資料要幹嘛
+	- Cluster的ID是做什麼用的? 怎麼產生的? 隨機變數??
+	- cluster ID 跟LOD的關係是什麼?
+	- 每個cluster都會有個bounds? bounds是怎麼被計算的? 被用來幹嘛?
+	- bounds會是球狀的嗎?為什麼是球的?每個LOD的cluster都會有球狀bounds嗎?
+	- 有個特殊的cluster struct
+	- FGaussianCluster跟FGaussianGPUCluster差在哪? 都有在用嗎?
+	- 不是有gaussian splat asset了，為什麼還要有FGaussianSplat
+	- FGaussianSplat跟FGaussianGPULODSplat都有在用嗎?
+	- padding是什麼? 為什麼這種struct會是GPU friendly?
+	- GPU版本的裡面似乎又包了CPU版本的，為什麼有這種設計?
+	- GaussianClusterBuilder裡面有用到GaussianClusterTypes
+	- 也許用Morton code創建cluster這件事本身就有錯?
+	- 我其實不明白merge本身做了什麼事情
+	- cluster的哪一部分是預先做的? 哪一部分是runtime做的?
+	- 看不懂Morton code的目的是什麼，跟cluster這件事有什麼關係? 我猜是幫cluster之間做編碼，以便找到需要的cluster?
+	- 而且已Nanite的概念來說，應該只會減少點的密度，不至於會少到破洞吧?
+	- morton code是一種空間編碼
+	- 但GS的點在場景中這麼隨機，morton code要怎麼運作
+	- BVH又是什麼? 我的cluster結構跟BVH有關嗎?
+	- morton code跟quad tree是有關係的嗎?
+	- PLY進來之後是處理完再轉成uasset嗎?
+	- GaussianSplatAsset確實有引用GaussianClusterTypes
+
+
+--------------------------------------------------------------------------------------------
+[General]
+	- this plugin has 2 modules(library/plugin), defined in GaussianSplatting.uplugin file
+	- GaussianSplatting is Runtime Type(always), GaussianSplattingEditor is Editor type(editor only, won't ship with game)
+	- header files use forward declarations when possible, .cpp files use #include
+	- UPrimitiveComponent > can be place in the world and render
+	- render workflow: game thread > scene proxy > render thread > shader > GPU
+	- BufferRHIRef > GPU side都是這個type
+	- GPU的memory跟CPU的是無法共用的
+	- shader會用到Buffer裡面的資料比如ViewDataBuffer
+	- Any data a shader need will need to create a buffer(in GPU memory)
+	- GPU resource is just buffer(static buffer and dynamic buffer)
+	- copy the data from RAM into VRAM
+	- GPU variable has no type at all, untyped
+	- CPU run C++ on RAM, GPU run HLSL on VRAM
+	- CPU side UE will use the garbage collector to clean up the memory after actor got deleted
+	- GPU side we will need to destroy by ourself
+	- 如果沒有destroy會造成memory leak。CPU side是因為有garbage collector
+	- UE本身就有一大串cmdlist跟GPU resource task，我只是把它reference過來，加入新funciton，再還回去
+	- free VRAM when gaussian splat component got deleted
+	- compute shader: not vertex shader, not pixel shader. pure computing, not related to output pixel
+	- 用渲染的pixel去決定目前渲染的粗糙程度在畫面中能不能被接受 > 有多少pixel是錯的
+
+--------------------------------------------------------------------------------------------
+[Editor Module]
+	- "PLYFileReader": Tools for process PLY binary files. Support reading and parsing data (position, rotation, scale, opacity, color)
+	- "GaussianSplatAssetFactory": Import PLY file, build clusters and convert it into custom GaussianSplatAsset .uasset. Support reimport and mark file dirty
+	- "GaussianSplatAssetTypeActions": Controls how the imported asset looks and behaves in the content browser editor
+
+--------------------------------------------------------------------------------------------
+[Runtime Module]
+	[Data]
+	- "GaussianDataTypes": Data stuct and enum for GaussianSplatAsset (FGaussianSplatData raw data)
+	- "GaussianSplatAsset": .uasset which contains Gaussian Splatting data from PLY files. Fundamental UObject(pure data) + helper functions
+	- we use custom .uasset "Gaussian Splat Asset"(serialized, UObject). Won't use original PLY file
+	
+	[Cluster]
+	- "GaussianClusterTypes": define the point number of cluster in each level, helper functions (Encode Morton code...)
+	- "GaussianClusterBuilder": define the cluster tree and point reduction ratio. Used in GaussianSplatAssetFactory
+	
+	[Actor & Component]
+	- "GaussianSplatActor": Contain GaussianSplatComponent. Can be placed in the level
+	- "GaussianSplatComponent": Game thread. Create component, expose user variables, include GaussianSplatAsset and GaussianSplatSceneProxy
+	
+	[GPU Data Management]
+	- "GaussianSplatSceneProxy": Render thread. Mirror of the GaussianSplatComponent for GPU. Copy the data from bulk data on CPU(RAM), register GPU Resources(buffer), upload buffers to GPU(VRAM), shader use the buffer for calculation, destroy bufer after GaussianSplatComponent got removed
+	- A thread safe, render-only copy of the component’s rendering data(UPrimitiveComponent). Render Thread won't touch UComponents
+	- pure resource management
+	- Buffer(pure GPU memory)
+	- ShaderResourceViewRHIRef(SRV)(interpret the memory into type, shader read only)
+	- UnorderedAccessViewRHIRef(UAV)(interpret the memory into type, shader read/write)
+	- Static buffers: uploaded once from asset data, never change(PositionBuffer, OtherDataBuffer, SHBuffer, ClusterBuffer)
+	- Dynamic buffers: allocated once but overwritten every frame by compute shaders(ViewDataBuffer, SortDistanceBuffer, SortKeysBuffer)
+	- variable on GPU are untyped
+
+	[Render Pipeline Integration]
+	- "GaussianSplatViewExtension": register/unregister GaussianSceneProxy(we don't hook the render into pipeline here)
+	- "GaussianSplatting": Module. Incude GaussianSplatViewExtension, build RDG, hook into render pipeline(currently before translucency)
+	- each render pipeline stage usually contain lots of passes. RDG will be used for cleaning up the render
+	
+	[Render]
+	- "GaussianSplatShaders": declare shader parameters struct, link with all shader files(.usf)
+	- "GaussianSplatRenderer": connect parameters between GaussianSplatSceneProxy and GaussianSplatShaders. Add live view state(camera data) each frame
+
+------------------------------------------------------------------------
+[Shader]
+	*Shaders will be fire through GaussianSplatRenderer's dispatch functions
+	*Buffer were created through GaussianSceneProxy. Shader calculated based on the buffer(reference)
+	- "CalcDistances.usf": For each splat, extracts Z coordinate from ViewDataBuffer. Converts depth to sortable uint
+	- "RadixSort.usf": GPU gaussian splats sorting
+	- "CalcViewData.usf": Transform 3D splat data to 2D screen-space data. Pass calculated result to ViewDataBuffer
+	- "GaussianSplatRendering.usf": final render. Rasterrization, vertex shader, pixel shader
+	- "GaussianSplatting.ush": some helper functions for loading data from buffer
+	- "ClusterCulling.usf": Frustum culling and LOD selection at cluster level for Nanite-style optimization(screen space error)
+	- "GaussianDataTypes.ush": some data type
+	- "SphericalHarmonics.ush": spherical harmonics calculation
+
+----------------------------------------------------------------------------------------------
