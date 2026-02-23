@@ -1,15 +1,15 @@
 
-
+[To Do list]
 ***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode > 現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
 ***SH function目前是失敗的
 ***可以學一下spark的LOD優化
 ***目前cluster是以0.25倍做遞減
 ***GS遠處的會覆蓋在近處的上面
-
-
 ***一定會用GPU，有必要保留CPU的cluster type嗎? 應該不用，把他刪掉
+***轉成Nanite的PLY points有辦法回復嗎?
+**************************************************************************************************
 
-
+分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何
 
 [Questions]
 	- 目前cluster顯示是錯的是為什麼?
@@ -23,77 +23,107 @@
 	- 反正就是LOD不對
 
 
-***Process: Morton Code > Leaf Cluster > Parent Cluster > generate splats for non leaf cluster > runtime cluuing
-***每一個步驟都要搞懂他在幹嘛
-*Morton Code: 空間上相鄰的的點在Array上也相鄰。以空間相鄰的方式(Z line)，把所有的物件排進1D Array(處理起來比較快?比較有效地載入記憶體?是cache相關的)
-*Leaf Cluster: Morton Code算完之後接下來只是在1D Array上去切割分段 >每128個切一段
-*聽起來是有助於針對空間上一小塊一小塊相鄰的區域，載入記憶體。非原始順序相連，而是空間相連
-*所以Cluster的結構就叫做Bounding Volume Hierarchies(BVH) > 小群簇構成中群簇，中群簇構成大群簇
-*但他為什麼叫bounding volume?? 是因為這些cluster是由bounding box來決定的??
-*所以其實是先畫好Z再來討論點嗎?https://www.youtube.com/watch?v=8EoVmq8438A
-*我們用bounding box去做cluster grouping嗎?
-*但最原始的leaf cluster是怎麼來的?
-*Bounding Volume Hierarchies(BVH): https://www.youtube.com/watch?v=LAxHQZ8RjQ4
-*What is cache?
-*Morton Code這個算法本身就會弄出空間相鄰的1D array
-*算完的Morton Code會被存起來嗎?
-*leaf Cluster的screen space error 是0 
-AABB (Axis-Aligned Bounding Box) > box shape bounds
-Bounding Sphere > sphere shape bounds
-需要bounds的原因是之後要做frustum culling, screen space error
+***有一些點幾乎是藍的 > 是不是跟疏密程度有關? morton是不是不是用於GS這種點的數量差很多的?
+***密度較高的地方可以看到cluster一直在變，但密度較低的地方可以看到cluster沒什麼在變 > 因為低密度的地方MaxError一直都很大?
+***假設每128一個cluster，那密度比較稀疏的地方不就很大一個面積都是一同一個cluster? 這樣MaxError不就很大?
+***仙人掌好像沒有這個問題
 
 
 
 
+***為什麼1D array memory cache會比較快
+
+採用哪層LOD是怎麼被決定的? 這寫在code的哪裡?照理說靠近相機的範圍應該都會載入低LOD的對吧? 會有什麼例外嗎?
+***如果新的merge的點跟原本的距離差太多(比如max error容許度是4，但大於4了)，就不會使用這個LOD cluster > 所以其實是再算舊的點跟新的點的距離!?
+***距離要從world space轉成是screen space，因為我們在乎的是screen space的距離
+***視覺上差太多就會用original的，視覺上沒什麼差就用LOD splat的
+
+
+
+
+[Screen Space Projected Error]
+	*這一段有很大的機率有問題
+	- Error = How much the LOD version is "wrong" compared to the original
+	- LOD splat是相較於leaf cluster高階的點，原理是將leaf cluster的點merge成25%
+	- merge的原理是平均position, rotation, color...2.3等資料
+	- world space error: 原始點跟merge點相差的距離(看有多error)
+	- screen space error: world space error做screen space轉換。我們在乎的是screen space的差異有多大而不是world space
+	- Close > large projected error > low LOD
+	- Far > small projected error > high LOD
+	- MaxError = The actual error value STORED in each cluster (computed during import)
+	- ErrorThreshold = The acceptable limit SET by user (runtime setting)
+	- screen space error是在runtime下計算的
+
+ErrorThreshold > 就是可以接受的範圍
+MaxError跟ErrorThreshold有點問題
+每個cluster都會有MaxError
+MaxError的數值是蠻隨機的? 畢竟cluster是依照morton code去切的
+MaxError是用來幹嘛的?
+MaxError算是離散程度，就是一個在world space中merge splat跟cluster splat的最大距離 > 其實就是看這段長度在screen space下有多長(是否有在ErrorThreshold的容許範圍)
+
+
+
+
+[Cluster System]
+	- Process: Original points > Morton Code > Create Leaf Cluster > Create Parent Cluster > Create LOD splats > save to UGaussianSplatAsset > runtime culling
+	- Morton Code: make points adjacent in 3D spce also adjacent in memory(1D Array). Z line adjacent as the final result in 3D space (faster for memory cache). Random order to spatially coherent
+	- Create Leaf Cluster: Ater encoded Morton Code and arrange points into 1D Array, for each 128 points sliced into a cluster. Create bounds for frustum culling, screen space error
+	- cluster是meta data加在point data上面
+	- Create LOD splats: merge 4 points into one points(blending position, rotation and color value)
+	- Total Point Count will be larger Than Original PLY. Total Points = Original Splats + LOD Splats
+	- splat在decrease的同時，範圍也會變大，照理說不會disappear才對
+	- ClusterCulling.usf是主要的LOD選擇算法
+	- 紀錄每個cluster最大的離散程度就好 > 這就是MaxError的來由
+
+[LOD splats]
+	- 所以LOD splats會包含他是哪一層LOD的資訊?
+	- LOD debug mode好像可以看到LOD的資訊?
+	- so the final point counts of our uasset will be much larger than the original PLY point count right?
+	- Does LOD splats include the LOD data of each cluster? So leaf cluster is LOD 0, the merged higher level cluster will be LOD1, then the merged even higher level cluster will be LOD2, somthing like that?
+	- As I remember our debug console command "gs.ShowClusterBounds 2" will show the LOD by color in the level. Is it displaying the color based on the current LOD data stored inside LOD splats?
+	
+
+
+
+	
 *目前不知道cluster的資料到底長怎樣
-- 看起來是UGaussianSplatAsset有兩層Array, splat data 跟clustter data
-- position array
-- rotation array
-- color array
-- cluster怎麼被存起來的?
-- bounding box怎麼被存起來的?
-- 這些跟bulkdata有關嗎?
-- 還是說他是以整個class的方式安插進去?
+	- 看起來是UGaussianSplatAsset有兩層Array, splat data 跟clustter data
+	- position array > 沒錯就是vector array
+	- rotation array
+	- color array
+	- cluster怎麼被存起來的?
+	- bounding box怎麼被存起來的?
+	- 這些跟bulkdata有關嗎?
+	- 還是說他是以整個class的方式安插進去?
+	- 最終肯定是UGaussianSplatAsset
+	- 主要儲存GS資料的是這個對吧? FGaussianSplatData > 這是每一個點一個struct，包含position, rotation, scale...等資料
+	- cluster asset包splat asset?
+	- 看起來是FGaussianCluster裡面包FGaussianSplatData
+	- 那這個呢?FGaussianLODSplat > 看起來leaf cluster是沒有用到這個的
+	- 用ClusterID去存目前cluster, child cluster, parent cluster的資料
+	- LODLevel會存這層cluster的LOD
 
 
 
-- So the Z shape is the result of encoded Morton code. We are not drawing Z shape as purpose
 
-這三者的關係是什麼?
-FGaussianCluster
-FGaussianLODSplat: data from PLY
-FGaussianClusterHierarchy
-
-This is an Unreal Engine plugin I created called "GaussianSplatting" "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting".
+This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
 It can import and render gaussian splatting PLY file inside Unreal Engine.
 
-Currently I am creating a feature which will render gaussian splats based on the clusters.
-The idea was came from Unreal Engine's Nanite system.
-I don't want to render all the gaussian splat points.
-Instead, just render the gaussian splat points that is required for the details that can be seen from the screen.
+Currently I am building a feature which can render the gaussian splats based on the cluster.
+The idea is inspired by Unreal Engine's Nanite.
+No need to render all the gaussian splat points all the time.
+Just render the details required for the screen.
 
-However currently the cluster system has some issue and I don't know where the issue came from.
-I want to do some investigation first.
-Can you explain how current's cluster system work?
-Especially how the file GaussianClusterBuilder and GaussianClusterTypes work.
-When we import a PLY file, what will we do to the file?
-
-
-
-最低階的cluster是怎麼形成的?
-高一階的cluster是怎麼形成的?
-FGaussianLODSplat > 這個具體怎麼被應用?
-所以其實只是在原始的ply資料上再架一層cluster的資料?
-cluster ID是幹嘛用的? 是怎麼形成的?
-還有一層LOD資料，這是幹嘛用的?
-
-point 的3D position轉Morton Code > 不懂這是怎麼形成的
-先有Morton Code再創建cluster? > 有點聽不懂 
-所以Morton Code是一種排序的方法?
-不知道Max Error是什麼
+As I know we used a technique called Screen Space Error for choosing the LOD.
+But I am not sure what MaxError and ErrorThreshold mean.
+Can you explain?
+As I know we will merge the leaf cluster points into a higher level point called LOD Splat.
+If the distance between merged point and original point is called world space error.
+After the world space error got converted to screen space, it become screen space error.
+If the screen space error is larger than acceptable value we will load lower level LOD which will have higher density points.
+Does MaxError and ErrorThreshold related to this process?
 
 
-所以最終點的數量會提高嗎?
 
 [potential]
 - Maybe we make the cluster decrease more dramatically so I can see the difference more obviously.
@@ -161,7 +191,7 @@ point 的3D position轉Morton Code > 不懂這是怎麼形成的
 --------------------------------------------------------------------------------------------
 [Runtime Module]
 	[Data]
-	- "GaussianDataTypes": Data stuct and enum for GaussianSplatAsset (FGaussianSplatData raw data)
+	- "GaussianDataTypes": Data stuct and enum for GaussianSplatAsset (FGaussianSplatData PLY raw data for each point)
 	- "GaussianSplatAsset": .uasset which contains Gaussian Splatting data from PLY files. Fundamental UObject(pure data) + helper functions
 	- we use custom .uasset "Gaussian Splat Asset"(serialized, UObject). Won't use original PLY file
 	

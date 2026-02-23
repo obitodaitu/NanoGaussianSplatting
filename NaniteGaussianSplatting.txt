@@ -149,7 +149,8 @@ Tasks:
       {
           float3 BoundsMin;
           uint   SplatStartIndex;
-          float3 BoundsMax;
+          float3 BoundsM
+		  ax;
           uint   SplatCount;
           float4 BoundingSphere; // xyz=center, w=radius
           uint   ParentIndex;
