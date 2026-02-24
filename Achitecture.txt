@@ -6,29 +6,24 @@
 ***轉成Nanite的PLY points有辦法回復嗎?
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
+***螢幕拉伸的時候depth好像會算錯 > splats跟mesh的上下關係會錯
 **************************************************************************************************
 
 
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
 
-Currently the render of the gaussian splats has some issue.
-If I placed multiple GaussianSplatActors in the level, the latest added actor will always render in the front.
-Which does not make sense.
-If I placed a normal static mesh in the level, the front/back relationship of the static mesh and gaussian splats are correct.
-Which mean the staice mesh can be behind the gaussian splats and got occluded , make sense.
-Do you know what may be the reason that cause the issue?   
- 
-
-
-new asset will always on the top
-
-
-*splat的前後錯了 > 那跟mesh之間的前後會有錯嗎?
 *試試看default就渲染Nanite > 只是應該要從asset確定是否要讓這個asset開啟Nanite > 就跟一般的Nanite一樣
-*試試看整個野柳進去會如何
-*有一直閃的點是怎麼回是usf? 重開電腦看會不會好 > 這肯定是跟shader還有GPU相關
+[Nanite的打開與關閉]
+	- 
+
+
+
+
+
+
+
+*有一直閃的點是怎麼回是usf? 重開電腦看會不會好 > 這肯定是跟shader還有GPU相關 > 會有一陣抖動再穩定下來是為什麼? 感覺是一直再計算
 *邊緣有點糊糊的，看能不能改善
+*目前cluster的切換有點太明顯了
 
 
 
