@@ -7,9 +7,64 @@
 ***GS遠處的會覆蓋在近處的上面
 ***一定會用GPU，有必要保留CPU的cluster type嗎? 應該不用，把他刪掉
 ***轉成Nanite的PLY points有辦法回復嗎?
+***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 **************************************************************************************************
 
-分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何
+
+感覺是高階的LOD的資料亂了
+- 永遠顯示LOD0 > 這個沒問題
+- 永遠顯示LOD1
+
+
+  Usage examples:
+  gs.DebugForceLODLevel 0    // Force finest detail (leaf clusters only)
+  gs.DebugForceLODLevel 1    // Force LOD level 1
+  gs.DebugForceLODLevel 2    // Force LOD level 2
+  gs.DebugForceLODLevel -1   // Return to auto mode
+
+  For your 719k splat asset, approximate structure:
+  ┌───────────┬──────────┬─────────────────────┐
+  │ LOD Level │ Clusters │     Description     │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 0 (leaf)  │ ~5617    │ Original splats     │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 1         │ ~702     │ First merged level  │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 2         │ ~88      │ Second merged level │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 3         │ ~11      │ Third merged level  │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 4         │ ~2       │ Fourth merged level │
+  ├───────────┼──────────┼─────────────────────┤
+  │ 5         │ 1        │ Root cluster        │
+
+
+This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting PLY file inside Unreal Engine.
+
+Currently I am building a feature which can render the gaussian splats based on the cluster.
+The idea is inspired by Unreal Engine's Nanite.
+No need to render all the gaussian splat points all the time.
+Just render the details required for the screen.
+
+However currently the cluster system has some issue.
+When I enable the cluster feature through the command "gs.UseLODRendering 1", some points are at wrong position, wrong scale, wrong color.
+If I disable the cluster feature through the command "gs.UseLODRendering 0", all the points looks correct which mean the lowest LOD/leaf cluster works fine.
+
+Can you help me add a debug feature which will force render a specific LOD only?
+I want to check if a specific LOD is rendering correctly or not.
+Because our LOD system will build bottom up, I guess how many LOD we will have will vary depends on the point counts of the asset right?
+As I know the leaf cluster will have 128 points.
+For example the asset has more points will eventually has more LOD as we build bottom up from 128 points right?
+Any suggestion on how to add this LOD debug feature?
+
+
+
+
+
+
+
+
 
 [Questions]
 	- 目前cluster顯示是錯的是為什麼?

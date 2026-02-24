@@ -20,6 +20,7 @@
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
 extern TAutoConsoleVariable<int32> CVarUseLODRendering;
+extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
@@ -66,6 +67,7 @@ void FGaussianSplatRenderer::Render(
 	FMatrix CurrentVP = View.ViewMatrices.GetViewProjectionMatrix();
 	float CurrentErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
 	int32 CurrentDebugMode = CVarShowClusterBounds.GetValueOnRenderThread();
+	int32 CurrentDebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 	bool bCanSkipCompute = GPUResources->bHasCachedSortData &&
 		GPUResources->CachedViewProjectionMatrix.Equals(CurrentVP, 0.0f) &&
 		GPUResources->CachedLocalToWorld.Equals(LocalToWorld, 0.0f) &&
@@ -73,7 +75,8 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedSplatScale == SplatScale &&
 		GPUResources->CachedHasColorTexture == bHasColorTexture &&
 		GPUResources->CachedErrorThreshold == CurrentErrorThreshold &&
-		GPUResources->CachedDebugMode == CurrentDebugMode;
+		GPUResources->CachedDebugMode == CurrentDebugMode &&
+		GPUResources->CachedDebugForceLODLevel == CurrentDebugForceLODLevel;
 
 	// Check if LOD rendering is enabled
 	// GPU-driven LOD rendering: no CPU readback, all processing done on GPU
@@ -118,6 +121,7 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedHasColorTexture = bHasColorTexture;
 		GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
 		GPUResources->CachedDebugMode = CurrentDebugMode;
+		GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
 		GPUResources->bHasCachedSortData = true;
 	}
 
@@ -735,6 +739,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		ResetParams.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
 		ResetParams.ClusterVisibilityBitmapSize = VisibilityBitmapSize;
 		ResetParams.LeafClusterCount = GPUResources->LeafClusterCount;
+		ResetParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();  // Must bind (shared .usf)
 
 		// Dispatch enough threads to clear the bitmap and initialize selected cluster buffer
 		uint32 NumGroups = FMath::DivideAndRoundUp(FMath::Max(VisibilityBitmapSize, (uint32)GPUResources->LeafClusterCount), 64u);
@@ -788,6 +793,8 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.ErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
+		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)
+		CullingParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 
 		const uint32 ThreadGroupSize = 64;
 		const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)GPUResources->LeafClusterCount, ThreadGroupSize);

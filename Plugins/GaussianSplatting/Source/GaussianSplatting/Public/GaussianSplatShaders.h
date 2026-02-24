@@ -323,6 +323,8 @@ class FClusterCullingResetCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatOutputCountBuffer)
 		SHADER_PARAMETER(uint32, ClusterVisibilityBitmapSize)
 		SHADER_PARAMETER(uint32, LeafClusterCount)
+		// Debug: must match MainCS parameters (shared .usf file)
+		SHADER_PARAMETER(int32, DebugForceLODLevel)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -365,6 +367,8 @@ class FClusterCullingCS : public FGlobalShader
 		SHADER_PARAMETER(float, ErrorThreshold)
 		SHADER_PARAMETER(float, LODBias)
 		SHADER_PARAMETER(uint32, UseLODRendering)
+		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)
+		SHADER_PARAMETER(int32, DebugForceLODLevel)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

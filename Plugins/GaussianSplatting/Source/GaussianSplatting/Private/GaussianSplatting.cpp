@@ -61,6 +61,19 @@ TAutoConsoleVariable<int32> CVarUseLODRendering(
 	TEXT(" 1: On - use LOD splats for distant clusters (requires GPU-driven implementation)"),
 	ECVF_RenderThreadSafe);
 
+/** Debug: Force a specific LOD level for debugging LOD hierarchy */
+TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
+	TEXT("gs.DebugForceLODLevel"),
+	-1,
+	TEXT("Force rendering of a specific LOD level for debugging.\n")
+	TEXT("This ignores normal LOD selection and forces all clusters to use specified level.\n")
+	TEXT(" -1: Auto - normal LOD selection based on distance/error (default)\n")
+	TEXT("  0: Force leaf clusters only - render original splats (finest detail)\n")
+	TEXT("  1+: Force specific LOD level (1 = first parent level, 2 = second, etc.)\n")
+	TEXT("Note: Higher levels have fewer, coarser splats. Max level depends on asset size.\n")
+	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 int32 GGaussianSplatShowClusterStats = 0;

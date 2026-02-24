@@ -41,6 +41,9 @@ RWStructuredBuffer<uint> LODSplatOutputCountBuffer;
 // Whether LOD rendering is enabled
 uint UseLODRendering;
 
+// Debug: Force specific LOD level (-1 = auto, 0 = leaf only, 1+ = specific level)
+int DebugForceLODLevel;
+
 // Uniforms
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
@@ -190,42 +193,84 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Calculate distance from camera to cluster center
 	float distanceToCamera = length(worldCenter.xyz - CameraPosition);
 
-	// Walk up parent chain to find selected cluster for LOD/visualization
-	uint currentClusterIdx = clusterIndex;
-	while (true)
+	// Debug: Force specific LOD level
+	// DebugForceLODLevel: -1 = auto, 0 = leaf only, 1+ = force specific level
+	if (DebugForceLODLevel == 0)
 	{
-		FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
+		// Force leaf cluster only - skip LOD walk-up
+		useLOD = false;
+		selectedClusterID = clusterIndex;
+	}
+	else if (DebugForceLODLevel > 0)
+	{
+		// Force walk up to specific LOD level
+		uint targetLODLevel = (uint)DebugForceLODLevel;
+		uint currentClusterIdx = clusterIndex;
 
-		// Check if this cluster has a valid parent
-		if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
+		while (true)
 		{
-			break;  // Reached root or invalid parent
-		}
+			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
 
-		FGaussianGPUCluster parentCluster = ClusterBuffer[currentCluster.ParentIndex];
+			// Check if we've reached the target LOD level
+			if (currentCluster.LODLevel >= targetLODLevel)
+			{
+				selectedClusterID = currentClusterIdx;
+				useLOD = (currentClusterIdx != clusterIndex);
+				break;
+			}
 
-		// Floor MaxError at half the bounding sphere radius to prevent dense clusters
-		// (with tiny merge displacement) from selecting LOD when too close to camera.
-		// This ensures LOD only kicks in when the cluster projects to < ~64px radius.
-		float effectiveError = max(parentCluster.MaxError, parentCluster.BoundingSphere.w * 0.5);
+			// Check if this cluster has a valid parent
+			if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
+			{
+				// Reached root without finding target level - use current (highest available)
+				selectedClusterID = currentClusterIdx;
+				useLOD = (currentClusterIdx != clusterIndex);
+				break;
+			}
 
-		// Calculate projected error for parent cluster
-		float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
-
-		// Apply LOD bias (positive = prefer coarser LOD)
-		projectedError = projectedError * exp(-LODBias * 0.1);
-
-		// If parent's error is acceptable, use the parent as selected cluster
-		if (projectedError < ErrorThreshold)
-		{
-			selectedClusterID = currentCluster.ParentIndex;
-			useLOD = true;
+			// Move to parent
 			currentClusterIdx = currentCluster.ParentIndex;
-			// Continue walking up to find the coarsest acceptable cluster
 		}
-		else
+	}
+	else
+	{
+		// Auto mode: Walk up parent chain based on projected error threshold
+		uint currentClusterIdx = clusterIndex;
+		while (true)
 		{
-			break;  // Parent's error is too large, stop here
+			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
+
+			// Check if this cluster has a valid parent
+			if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
+			{
+				break;  // Reached root or invalid parent
+			}
+
+			FGaussianGPUCluster parentCluster = ClusterBuffer[currentCluster.ParentIndex];
+
+			// Floor MaxError at half the bounding sphere radius to prevent dense clusters
+			// (with tiny merge displacement) from selecting LOD when too close to camera.
+			// This ensures LOD only kicks in when the cluster projects to < ~64px radius.
+			float effectiveError = max(parentCluster.MaxError, parentCluster.BoundingSphere.w * 0.5);
+
+			// Calculate projected error for parent cluster
+			float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
+
+			// Apply LOD bias (positive = prefer coarser LOD)
+			projectedError = projectedError * exp(-LODBias * 0.1);
+
+			// If parent's error is acceptable, use the parent as selected cluster
+			if (projectedError < ErrorThreshold)
+			{
+				selectedClusterID = currentCluster.ParentIndex;
+				useLOD = true;
+				currentClusterIdx = currentCluster.ParentIndex;
+				// Continue walking up to find the coarsest acceptable cluster
+			}
+			else
+			{
+				break;  // Parent's error is too large, stop here
+			}
 		}
 	}
 

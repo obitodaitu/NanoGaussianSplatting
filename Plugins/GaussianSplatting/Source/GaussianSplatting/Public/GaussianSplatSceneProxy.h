@@ -296,6 +296,7 @@ public:
 	bool CachedHasColorTexture = false;
 	float CachedErrorThreshold = -1.0f;
 	int32 CachedDebugMode = -1;
+	int32 CachedDebugForceLODLevel = -1;
 	bool bHasCachedSortData = false;
 };
 
