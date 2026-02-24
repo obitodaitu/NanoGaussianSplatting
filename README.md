@@ -46,5 +46,6 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - `gs.ShowClusterBounds 2`: show LOD cluster in different color
 - `gs.UseLODRendering 0`: disable Nanite cluster render
 - `gs.UseLODRendering 1`: enable Nanite cluster render
+- `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
 
 
