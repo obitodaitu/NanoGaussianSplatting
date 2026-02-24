@@ -1,67 +1,36 @@
 
 [To Do list]
-***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode > 現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
+***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
 ***SH function目前是失敗的
-***可以學一下spark的LOD優化
 ***目前cluster是以0.25倍做遞減
-***GS遠處的會覆蓋在近處的上面
-***一定會用GPU，有必要保留CPU的cluster type嗎? 應該不用，把他刪掉
 ***轉成Nanite的PLY points有辦法回復嗎?
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
 **************************************************************************************************
 
 
+This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting PLY file inside Unreal Engine.
 
-Nice the performance is so much better!
-
-Next, I want to modify the debug color.
-The console command "gs.ShowClusterBounds 1" will enable the colorful Nanite-style cluster preview.
-However currently the color is quite bright and washed out compare to actual Nanite's color.
-Is it because of the color space?
-I want to make the debug color more like Nanite and not washed out.
-
-
-
-
+Currently the render of the gaussian splats has some issue.
+If I placed multiple GaussianSplatActors in the level, the latest added actor will always render in the front.
+Which does not make sense.
+If I placed a normal static mesh in the level, the front/back relationship of the static mesh and gaussian splats are correct.
+Which mean the staice mesh can be behind the gaussian splats and got occluded , make sense.
+Do you know what may be the reason that cause the issue?   
+ 
 
 
-*重新生成solution file
-*submit一次
+new asset will always on the top
 
-*splat的前後錯了
-*有一直閃的點是怎麼回是usf? 重開電腦看會不會好
+
+*splat的前後錯了 > 那跟mesh之間的前後會有錯嗎?
+*試試看default就渲染Nanite > 只是應該要從asset確定是否要讓這個asset開啟Nanite > 就跟一般的Nanite一樣
+*試試看整個野柳進去會如何
+*有一直閃的點是怎麼回是usf? 重開電腦看會不會好 > 這肯定是跟shader還有GPU相關
 *邊緣有點糊糊的，看能不能改善
 
 
-[發揮cluster效益]
-	- 確實是來自data mismatch
-	- 只有在距離很遙遠的時候才會發揮效益，為什麼?
-	- 近距離用LOD0跟LOD5差別並不大
-	- 遠距離的時候有助於解決quad overdraw
-
-
-Nice! So the issue was came from data mismatched.
-It works fine now!
-
-Let's move on to another issue.
-I want to discuss first. Don't modify the code.
-I placed a lot of gaussian splat assets in the level.
-
-When the assets were close to the camera, if I forced the LOD to 0, the quality looks good and I got 32 fps.
-When the assets were close to the camera, if I forced the LOD to 5, the quality looks bad and I got 36 fps.
-That is out of my expectation.
-The reason that LOD 5 looks bad is because it's rendering less points right? So it's blury.
-However the fps just increase a little bit.
-
-When the assets were far from the camera(which mean the points start overlaaping a lot on each other on the screen), if I forced the LOD to 0, I got 12 fps.
-When the assets were far from the camera, if I forced the LOD to 5, I got 36 fps.
-The performance increse a lot as what I expected and this is the reason I want to build this cluster feature.
-
-Do you have any idea why the cluster system is not helpful when camera is close to the asset?
-Any idea how to make the cluster system helpful?
-
-	
 
 
 
@@ -70,49 +39,6 @@ Any idea how to make the cluster system helpful?
 
 
 
-
-
-
-請他列出目前檔案做的壓縮 > 資料壓縮或簡化都會造成mismatch
-
-
-- 會不會是GPU資料壓縮有錯? 這個資料mismatch是怎麼造成的? 
-- 也許先從merge position開始，至少確認position是對的 > 現在high level splat的position絕對是錯的
-
-
-
-看起來目前不管怎麼算都只會有5階LOD cluster!?只是每個cluster點的數量不同而已
-LOD 0, 每個cluster 128個點
-LOD 1 , 每個cluster 128/4=32 個點
-LOD 2 , 每個cluster 128/4/4=8 個點
-LOD 3 , 每個cluster 128/4/4/4=2 個點
-
-
-***會不會又是GPU壓縮機制造成的?
-
-Okay. So the result is quite obvious.
-Only the leaf cluster is correct.
-Tell me how higher level LOD cluster got created.
-
-As I remembered, we will merged the adjacent points into a single points by blending their position, rotation and color data right?
-Tell me how we actually merge it in our code.
-Also, how we decide how many points that will be used for merging into a higher level cluster?
-How we decide which points to merge into a higher level cluster?
-I only know each parent cluster will only have 25% point counts of it's child clusters combined.
-Is this correct?
-
-
-
-感覺是高階的LOD的資料亂了
-- 永遠顯示LOD0 > 這個沒問題
-- 永遠顯示LOD1
-
-
-  Usage examples:
-      // Force finest detail (leaf clusters only)
-  gs.DebugForceLODLevel 1    // Force LOD level 1
-  gs.DebugForceLODLevel 2    // Force LOD level 2
-  gs.DebugForceLODLevel -1   // Return to auto mode
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
   For your 719k splat asset, approximate structure:

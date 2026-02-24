@@ -132,7 +132,9 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 	}
 
 	FRDGBuilder& GraphBuilder = *Parameters.GraphBuilder;
-	const FViewInfo& View = *Parameters.View;
+
+	// Store view pointer (FViewInfo inherits from FSceneView)
+	const FSceneView* SceneView = reinterpret_cast<const FSceneView*>(Parameters.View);
 
 	// Get registered proxies
 	TArray<FGaussianSplatSceneProxy*> Proxies;
@@ -143,8 +145,19 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		return;
 	}
 
-	// Store view pointer for lambda capture (FViewInfo inherits from FSceneView)
-	const FSceneView* SceneView = reinterpret_cast<const FSceneView*>(Parameters.View);
+	// Sort proxies by distance to camera (back-to-front) for correct depth ordering
+	// This ensures farther actors render first, so closer actors properly occlude them
+	if (Proxies.Num() > 1)
+	{
+		FVector CameraPosition = SceneView->ViewMatrices.GetViewOrigin();
+		Proxies.Sort([CameraPosition](const FGaussianSplatSceneProxy& A, const FGaussianSplatSceneProxy& B)
+		{
+			// Sort by distance from camera to bounds center (descending - farthest first)
+			float DistA = FVector::DistSquared(CameraPosition, A.GetBounds().Origin);
+			float DistB = FVector::DistSquared(CameraPosition, B.GetBounds().Origin);
+			return DistA > DistB;  // Farther objects first (back-to-front)
+		});
+	}
 
 	// Get the color texture from parameters - we need to render to this
 	FRDGTexture* ColorTexture = Parameters.ColorTexture;
