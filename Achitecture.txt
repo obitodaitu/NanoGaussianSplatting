@@ -2,29 +2,28 @@
 [To Do list]
 ***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
 ***SH function目前是失敗的
-***目前cluster是以0.25倍做遞減
 ***轉成Nanite的PLY points有辦法回復嗎?
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
 ***螢幕拉伸的時候depth好像會算錯 > splats跟mesh的上下關係會錯
+***把gaussian splat在content browser從component改成actor，我希望可以直接drag and drop而不是還要創一個actor, assign component
 **************************************************************************************************
 
 
 
 *試試看default就渲染Nanite > 只是應該要從asset確定是否要讓這個asset開啟Nanite > 就跟一般的Nanite一樣
 [Nanite的打開與關閉]
-	- 
+- 順暢地打開跟關閉很重要，畢竟這不是必要的功能
+- nanite debug mode應該要能看出差別
+- command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
+- disable nanite會沒辦法渲染
 
 
-
-
-
-
-
-*有一直閃的點是怎麼回是usf? 重開電腦看會不會好 > 這肯定是跟shader還有GPU相關 > 會有一陣抖動再穩定下來是為什麼? 感覺是一直再計算
+*有一直閃的點是怎麼回是usf? 重開電腦看會不會好 > 這肯定是跟shader還有GPU相關 > 會有一陣抖動再穩定下來是為什麼? 感覺是一直在計算?
+*會有GS渲染壓在static mesh的preview上，是為什麼?
 *邊緣有點糊糊的，看能不能改善
 *目前cluster的切換有點太明顯了
-
+*bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 
 
 
