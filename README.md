@@ -15,7 +15,8 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 - Nanite-like gaussin splatting performance optimization solution
 
-<img width="1917" height="1028" alt="Nanite" src="https://github.com/user-attachments/assets/c64be0b5-4982-4850-8ea5-f04649096ba2" />
+<img width="1594" height="641" alt="Nanite1" src="https://github.com/user-attachments/assets/0c028439-3bc7-4cb8-8e46-dc986a267675" />
+<img width="1915" height="1025" alt="Nanite2" src="https://github.com/user-attachments/assets/71612017-103c-41b5-8240-fb13dd98f485" />
 
 
 
