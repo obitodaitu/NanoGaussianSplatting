@@ -93,6 +93,21 @@ struct FGaussianSplatData
 			SH[i] = FVector3f::ZeroVector;
 		}
 	}
+
+	/** Serialization */
+	friend FArchive& operator<<(FArchive& Ar, FGaussianSplatData& Splat)
+	{
+		Ar << Splat.Position;
+		Ar << Splat.Rotation;
+		Ar << Splat.Scale;
+		Ar << Splat.Opacity;
+		Ar << Splat.SH_DC;
+		for (int32 i = 0; i < 15; i++)
+		{
+			Ar << Splat.SH[i];
+		}
+		return Ar;
+	}
 };
 
 /**

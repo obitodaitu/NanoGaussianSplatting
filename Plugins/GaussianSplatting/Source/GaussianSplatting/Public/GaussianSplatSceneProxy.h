@@ -275,8 +275,9 @@ private:
 	/** Cached cluster data for initialization */
 	TArray<FGaussianGPUCluster> CachedClusterData;
 
-	/** Cached LOD splat data for initialization */
-	TArray<FGaussianGPULODSplat> CachedLODSplatData;
+	// NOTE: CachedLODSplatData removed in unified approach.
+	// LOD splats now use the same format as original splats and are appended
+	// to the main buffers (Position, OtherData, ColorTexture) during import.
 
 	/** Cached splat-to-cluster index mapping */
 	TArray<uint32> CachedSplatClusterIndices;

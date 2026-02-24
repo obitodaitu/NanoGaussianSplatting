@@ -48,9 +48,18 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 		LeafClusterCount = Hierarchy.NumLeafClusters;
 		bHasClusterData = true;
 
-		// Build splat-to-cluster index mapping
+		// UNIFIED APPROACH: LOD splats are now appended to main buffer
+		// TotalSplatCount = original splats, TotalLODSplatCount = LOD splats
+		// SplatCount (from asset) = TotalSplatCount + TotalLODSplatCount
+		const uint32 OriginalSplatCount = Hierarchy.TotalSplatCount;
+		LODSplatCount = Hierarchy.TotalLODSplatCount;
+		bHasLODSplats = (LODSplatCount > 0);
+
+		// Build unified splat-to-cluster index mapping
 		// Each splat needs to know which cluster it belongs to for visibility checks
 		CachedSplatClusterIndices.SetNumZeroed(SplatCount);
+
+		// Map original splats to their leaf clusters
 		for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
 		{
 			const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
@@ -60,6 +69,26 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 				for (uint32 i = 0; i < Cluster.SplatCount; ++i)
 				{
 					uint32 SplatIdx = Cluster.SplatStartIndex + i;
+					if (SplatIdx < OriginalSplatCount)
+					{
+						CachedSplatClusterIndices[SplatIdx] = ClusterIdx;
+					}
+				}
+			}
+		}
+
+		// Map LOD splats to their parent clusters (unified buffer approach)
+		// LOD splats are at indices [OriginalSplatCount, SplatCount)
+		// Cluster.LODSplatStartIndex now points into the unified buffer
+		for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
+		{
+			const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
+			// Only non-leaf clusters have LOD splats
+			if (!Cluster.IsLeaf() && Cluster.LODSplatCount > 0)
+			{
+				for (uint32 i = 0; i < Cluster.LODSplatCount; ++i)
+				{
+					uint32 SplatIdx = Cluster.LODSplatStartIndex + i;
 					if (SplatIdx < static_cast<uint32>(SplatCount))
 					{
 						CachedSplatClusterIndices[SplatIdx] = ClusterIdx;
@@ -68,43 +97,8 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 			}
 		}
 
-		// Cache LOD splat data if available
-		if (Hierarchy.LODSplats.Num() > 0)
-		{
-			Hierarchy.ToGPULODSplats(CachedLODSplatData);
-			LODSplatCount = CachedLODSplatData.Num();
-			bHasLODSplats = true;
-
-			// Build LOD splat-to-cluster index mapping for GPU-driven LOD rendering
-			// Each LOD splat needs to know which cluster it belongs to
-			CachedLODSplatClusterIndices.SetNumZeroed(LODSplatCount);
-			for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
-			{
-				const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
-				// Only non-leaf clusters have LOD splats
-				if (!Cluster.IsLeaf() && Cluster.LODSplatCount > 0)
-				{
-					for (uint32 i = 0; i < Cluster.LODSplatCount; ++i)
-					{
-						uint32 LODSplatIdx = Cluster.LODSplatStartIndex + i;
-						if (LODSplatIdx < static_cast<uint32>(LODSplatCount))
-						{
-							CachedLODSplatClusterIndices[LODSplatIdx] = ClusterIdx;
-						}
-					}
-				}
-			}
-
-			UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf clusters), %d LOD splats"),
-				ClusterCount, LeafClusterCount, LODSplatCount);
-		}
-		else
-		{
-			bHasLODSplats = false;
-			LODSplatCount = 0;
-			UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf clusters)"),
-				ClusterCount, LeafClusterCount);
-		}
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf), %d original + %d LOD = %d total splats (unified buffer)"),
+			ClusterCount, LeafClusterCount, OriginalSplatCount, LODSplatCount, SplatCount);
 	}
 	else
 	{
@@ -328,10 +322,11 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 
 void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICmdList)
 {
-	// Calculate total splat count including LOD splats for buffer sizing
-	TotalSplatCount = SplatCount + LODSplatCount;
+	// UNIFIED APPROACH: SplatCount already includes LOD splats (appended in factory)
+	// No need for separate TotalSplatCount calculation
+	TotalSplatCount = SplatCount;
 
-	// Pad to power of 2 for bitonic sort - use TotalSplatCount for LOD support
+	// Pad to power of 2 for bitonic sort
 	uint32 PaddedCount = FMath::RoundUpToPowerOfTwo(TotalSplatCount);
 
 	// View data buffer (per-frame computed data)
@@ -581,58 +576,9 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 	// Clear cached cluster data
 	CachedClusterData.Empty();
 
-	// Create LOD splat buffer if available
-	if (bHasLODSplats && CachedLODSplatData.Num() > 0)
-	{
-		const uint32 BufferSize = CachedLODSplatData.Num() * sizeof(FGaussianGPULODSplat);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianLODSplatBuffer"),
-			BufferSize,
-			sizeof(FGaussianGPULODSplat),
-			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		LODSplatBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(LODSplatBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedLODSplatData.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(LODSplatBuffer);
-
-		LODSplatBufferSRV = RHICmdList.CreateShaderResourceView(
-			LODSplatBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(FGaussianGPULODSplat)));
-
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created LOD splat buffer with %d splats (%d bytes)"),
-			LODSplatCount, BufferSize);
-	}
-
-	// Create LOD splat-to-cluster index buffer for GPU-driven LOD rendering
-	if (bHasLODSplats && CachedLODSplatClusterIndices.Num() > 0)
-	{
-		const uint32 BufferSize = CachedLODSplatClusterIndices.Num() * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianLODSplatClusterIndexBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		LODSplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(LODSplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedLODSplatClusterIndices.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(LODSplatClusterIndexBuffer);
-
-		LODSplatClusterIndexBufferSRV = RHICmdList.CreateShaderResourceView(
-			LODSplatClusterIndexBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created LOD splat-to-cluster index buffer for %d LOD splats"), LODSplatCount);
-	}
-	CachedLODSplatClusterIndices.Empty();
-
-	// Clear cached LOD splat data
-	CachedLODSplatData.Empty();
+	// UNIFIED APPROACH: No separate LOD splat buffer needed
+	// LOD splats are stored in the same buffers as original splats (Position, Other, Color)
+	// The SplatClusterIndexBuffer maps all splats to their clusters
 
 	// Create indirect draw argument buffer for GPU-driven rendering
 	// Structure: IndexCountPerInstance(4), InstanceCount(4), StartIndexLocation(4), BaseVertexLocation(4), StartInstanceLocation(4)

@@ -27,12 +27,15 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER_SRV(Texture2D, ColorTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
-		// Cluster visibility integration
+		// Cluster visibility integration (UNIFIED APPROACH)
+		// SplatClusterIndexBuffer maps ALL splats to their cluster (original->leaf, LOD->parent)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SplatClusterIndexBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODClusterSelectedBitmap)  // For LOD splat visibility
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SelectedClusterBuffer)
 		SHADER_PARAMETER(uint32, UseClusterCulling)
-		SHADER_PARAMETER(uint32, UseLODRendering)  // 1 = skip splats covered by parent LOD
+		SHADER_PARAMETER(uint32, UseLODRendering)  // 1 = enable LOD rendering (unified approach)
+		SHADER_PARAMETER(uint32, OriginalSplatCount)  // Count of original splats (LOD splats start after)
 		// Transform matrices
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
@@ -61,65 +64,9 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 	}
 };
 
-/**
- * Compute shader for GPU-driven LOD splat processing
- * Processes ALL LOD splats on GPU, rejects non-selected ones - no CPU readback needed
- */
-class FGaussianSplatCalcLODViewDataGPUDrivenCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FGaussianSplatCalcLODViewDataGPUDrivenCS);
-	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCalcLODViewDataGPUDrivenCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPULODSplat>, LODSplatBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODSplatClusterIndexBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODClusterSelectedBitmap)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPUCluster>, ClusterBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatOutputCountBuffer)
-		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
-		SHADER_PARAMETER(FMatrix44f, WorldToClip)
-		SHADER_PARAMETER(FMatrix44f, WorldToView)
-		SHADER_PARAMETER(FVector2f, ScreenSize)
-		SHADER_PARAMETER(FVector2f, FocalLength)
-		SHADER_PARAMETER(uint32, TotalLODSplats)
-		SHADER_PARAMETER(uint32, OutputStartIndex)
-		SHADER_PARAMETER(float, SplatScale)
-		SHADER_PARAMETER(float, OpacityScale)
-		SHADER_PARAMETER(uint32, ClusterCount)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
-	}
-};
-
-/**
- * Compute shader to update indirect draw args with LOD splat count
- * Single-thread shader that runs after CalcLODViewDataGPUDriven
- */
-class FUpdateDrawArgsCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FUpdateDrawArgsCS);
-	SHADER_USE_PARAMETER_STRUCT(FUpdateDrawArgsCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODSplatOutputCountBuffer)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
-};
+// NOTE: FGaussianSplatCalcLODViewDataGPUDrivenCS and FUpdateDrawArgsCS have been removed
+// in the unified approach. LOD splats are now processed by CalcViewData using the same
+// buffers as original splats. See CalcViewData.usf for unified LOD handling.
 
 /**
  * Compute shader for calculating sort distances (depth) for each splat

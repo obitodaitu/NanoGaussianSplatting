@@ -149,19 +149,20 @@ private:
 		const TArray<FGaussianCluster>& AllClusters);
 
 	//----------------------------------------------------------------------
-	// LOD Generation
+	// LOD Generation (Unified Approach - LOD splats use same format as original splats)
 	//----------------------------------------------------------------------
 
 	/**
 	 * Merge multiple Gaussians into a single representative Gaussian
 	 * Used to create simplified LOD representations
+	 * Returns FGaussianSplatData for unified buffer approach
 	 *
 	 * @param Splats Array of splats to merge
 	 * @param StartIndex First splat index
 	 * @param Count Number of splats to merge
-	 * @return Merged splat
+	 * @return Merged splat in unified format
 	 */
-	static FGaussianLODSplat MergeGaussians(
+	static FGaussianSplatData MergeGaussians(
 		const TArray<FGaussianSplatData>& Splats,
 		int32 StartIndex,
 		int32 Count);
@@ -169,14 +170,15 @@ private:
 	/**
 	 * Merge multiple LOD splats into a single representative
 	 * Used for higher LOD levels
+	 * Works with FGaussianSplatData for unified buffer approach
 	 *
-	 * @param LODSplats Array of LOD splats to merge
+	 * @param LODSplats Array of LOD splats to merge (unified format)
 	 * @param StartIndex First splat index
 	 * @param Count Number of splats to merge
-	 * @return Merged splat
+	 * @return Merged splat in unified format
 	 */
-	static FGaussianLODSplat MergeLODSplats(
-		const TArray<FGaussianLODSplat>& LODSplats,
+	static FGaussianSplatData MergeLODSplats(
+		const TArray<FGaussianSplatData>& LODSplats,
 		int32 StartIndex,
 		int32 Count);
 

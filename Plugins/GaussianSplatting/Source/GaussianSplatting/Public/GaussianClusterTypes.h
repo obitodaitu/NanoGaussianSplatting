@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GaussianDataTypes.h"
 #include "GaussianClusterTypes.generated.h"
 
 /**
@@ -23,46 +24,9 @@ namespace GaussianClusterConstants
 	constexpr uint32 RootParentID = 0xFFFFFFFF;
 }
 
-/**
- * Simplified/merged splat data for LOD representation
- * Smaller than FGaussianSplatData - only stores essential rendering data(position, color, scale, opacity ¡X no SH)
- */
-USTRUCT()
-struct FGaussianLODSplat
-{
-	GENERATED_BODY()
-
-	/** World position */
-	UPROPERTY()
-	FVector3f Position = FVector3f::ZeroVector;
-
-	/** Orientation quaternion */
-	UPROPERTY()
-	FQuat4f Rotation = FQuat4f::Identity;
-
-	/** 3D scale factors */
-	UPROPERTY()
-	FVector3f Scale = FVector3f::OneVector;
-
-	/** Alpha opacity [0,1] */
-	UPROPERTY()
-	float Opacity = 1.0f;
-
-	/** Base color (RGB, linear) */
-	UPROPERTY()
-	FVector3f Color = FVector3f(1.0f, 1.0f, 1.0f);
-
-	/** Serialization */
-	friend FArchive& operator<<(FArchive& Ar, FGaussianLODSplat& Splat)
-	{
-		Ar << Splat.Position;
-		Ar << Splat.Rotation;
-		Ar << Splat.Scale;
-		Ar << Splat.Opacity;
-		Ar << Splat.Color;
-		return Ar;
-	}
-};
+// NOTE: FGaussianLODSplat has been removed in the unified approach.
+// LOD splats now use FGaussianSplatData (same format as original splats).
+// This ensures a single source of truth for data format and shader compatibility.
 
 /**
  * Single cluster in the hierarchical structure
@@ -202,55 +166,8 @@ struct FGaussianCluster
 	}
 };
 
-/**
- * GPU-friendly LOD splat data for upload to structured buffer
- * Matches HLSL struct FGaussianGPULODSplat in GaussianDataTypes.ush
- * Total: 48 bytes
- */
-USTRUCT()
-struct FGaussianGPULODSplat
-{
-	GENERATED_BODY()
-
-	/** World position (12 bytes) */
-	FVector3f Position;
-
-	/** Scale (12 bytes) */
-	FVector3f Scale;
-
-	/** Rotation quaternion (16 bytes) */
-	FQuat4f Rotation;
-
-	/** Color RGB + Opacity A packed (4 bytes) */
-	uint32 ColorOpacityPacked;
-
-	/** Padding to 48 bytes */
-	uint32 Padding;
-
-	FGaussianGPULODSplat()
-		: Position(FVector3f::ZeroVector)
-		, Scale(FVector3f::OneVector)
-		, Rotation(FQuat4f::Identity)
-		, ColorOpacityPacked(0xFFFFFFFF)  // White, full opacity
-		, Padding(0)
-	{
-	}
-
-	/** Construct from CPU LOD splat data */
-	explicit FGaussianGPULODSplat(const FGaussianLODSplat& Splat)
-		: Position(Splat.Position)
-		, Scale(Splat.Scale)
-		, Rotation(Splat.Rotation)
-		, Padding(0)
-	{
-		// Pack color and opacity into single uint32 (RGBA8)
-		uint8 R = static_cast<uint8>(FMath::Clamp(Splat.Color.X * 255.0f, 0.0f, 255.0f));
-		uint8 G = static_cast<uint8>(FMath::Clamp(Splat.Color.Y * 255.0f, 0.0f, 255.0f));
-		uint8 B = static_cast<uint8>(FMath::Clamp(Splat.Color.Z * 255.0f, 0.0f, 255.0f));
-		uint8 A = static_cast<uint8>(FMath::Clamp(Splat.Opacity * 255.0f, 0.0f, 255.0f));
-		ColorOpacityPacked = (A << 24) | (B << 16) | (G << 8) | R;
-	}
-};
+// NOTE: FGaussianGPULODSplat has been removed in the unified approach.
+// LOD splats now use the same format as original splats and are appended to the main buffer.
 
 /**
  * GPU-friendly cluster data for upload to structured buffer
@@ -361,12 +278,13 @@ struct FGaussianClusterHierarchy
 	uint32 TotalSplatCount = 0;
 
 	/**
-	 * LOD splats for non-leaf clusters
+	 * LOD splats for non-leaf clusters (unified format with original splats)
 	 * Each non-leaf cluster has simplified splats representing its children
 	 * Indexed by FGaussianCluster::LODSplatStartIndex and LODSplatCount
+	 * NOTE: These are stored temporarily during build, then appended to main splat array
 	 */
 	UPROPERTY()
-	TArray<FGaussianLODSplat> LODSplats;
+	TArray<FGaussianSplatData> LODSplats;
 
 	/** Total number of LOD splats */
 	UPROPERTY()
@@ -427,15 +345,8 @@ struct FGaussianClusterHierarchy
 		}
 	}
 
-	/** Convert LOD splats to GPU-friendly format */
-	void ToGPULODSplats(TArray<FGaussianGPULODSplat>& OutGPULODSplats) const
-	{
-		OutGPULODSplats.Reset(LODSplats.Num());
-		for (const FGaussianLODSplat& Splat : LODSplats)
-		{
-			OutGPULODSplats.Add(FGaussianGPULODSplat(Splat));
-		}
-	}
+	// NOTE: ToGPULODSplats removed - LOD splats now use same format as original splats
+	// and are appended to the main splat buffers during asset initialization.
 
 	/** Clear all hierarchy data */
 	void Reset()

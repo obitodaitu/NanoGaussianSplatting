@@ -13,12 +13,17 @@ Texture2D ColorTexture;
 SamplerState ColorSampler;
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculaed result to ViewDataBuffer
 
-// Cluster visibility integration
+// Cluster visibility integration (UNIFIED APPROACH)
+// SplatClusterIndexBuffer maps ALL splats (original + LOD) to their cluster
+// - Original splats (index < OriginalSplatCount) -> leaf cluster ID
+// - LOD splats (index >= OriginalSplatCount) -> parent cluster ID
 StructuredBuffer<uint> SplatClusterIndexBuffer;
-StructuredBuffer<uint> ClusterVisibilityBitmap;
+StructuredBuffer<uint> ClusterVisibilityBitmap;       // Leaf cluster visibility
+StructuredBuffer<uint> LODClusterSelectedBitmap;      // Parent cluster LOD selection
 StructuredBuffer<uint> SelectedClusterBuffer;  // Maps leaf cluster -> selected cluster for debug viz
 uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
-uint UseLODRendering;    // 1 = skip splats covered by parent LOD, 0 = render all visible splats
+uint UseLODRendering;    // 1 = enable LOD rendering (unified approach)
+uint OriginalSplatCount; // Count of original splats (LOD splats start after this)
 
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
@@ -34,12 +39,20 @@ uint2 ColorTextureSize;
 uint PositionFormat; // 0=Float32 (only supported format now)
 uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
 
-// Check if a cluster is visible using the visibility bitmap
+// Check if a leaf cluster is visible using the visibility bitmap
 bool IsClusterVisible(uint clusterIndex)
 {
 	uint bitmapIndex = clusterIndex / 32;
 	uint bitMask = 1u << (clusterIndex % 32);
 	return (ClusterVisibilityBitmap[bitmapIndex] & bitMask) != 0;
+}
+
+// Check if a parent cluster is selected for LOD rendering
+bool IsLODClusterSelected(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (LODClusterSelectedBitmap[bitmapIndex] & bitMask) != 0;
 }
 
 [numthreads(256, 1, 1)]
@@ -51,51 +64,79 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	// Get cluster index for this splat (used for debug visualization and culling)
-	uint leafClusterIndex = 0;
-	uint selectedClusterID = 0;  // The cluster selected for visualization (may be parent if LOD is used)
-	uint selectedLODLevel = 0;   // LOD level of selected cluster (0=leaf, higher=coarser)
+	// UNIFIED APPROACH: Handle both original and LOD splats
+	// - Original splats: index < OriginalSplatCount, mapped to leaf clusters
+	// - LOD splats: index >= OriginalSplatCount, mapped to parent clusters
+	bool isLODSplat = (splatIndex >= OriginalSplatCount);
+	uint clusterIndex = 0;
+	uint selectedClusterID = 0;  // The cluster selected for visualization
+	uint selectedLODLevel = 0;   // LOD level of selected cluster
+
 	if (UseClusterCulling)
 	{
-		leafClusterIndex = SplatClusterIndexBuffer[splatIndex];
-		// Get the selected cluster ID and LOD level from the LOD selection (Nanite-style)
-		// Lower 24 bits = cluster ID, upper 8 bits = LOD level (packed by ClusterCulling)
-		uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
-		selectedClusterID = packedSelected & 0x00FFFFFF;
-		selectedLODLevel = (packedSelected >> 24) & 0xFF;
+		clusterIndex = SplatClusterIndexBuffer[splatIndex];
 
-		if (!IsClusterVisible(leafClusterIndex))
+		if (isLODSplat)
 		{
-			// Cluster is culled - mark splat as invalid
-			// Use ClipPosition.w = -1 as invalid marker
-			// Depth will be set to MAX in CalcDistances to sort to end
-			FGaussianSplatViewData viewData;
-			viewData.ClipPosition = float4(0, 0, 0, -1);
-			viewData.PackedColorRG = 0;
-			viewData.PackedColorBA = 0;
-			viewData.Axis1 = float2(0, 0);
-			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[splatIndex] = viewData;
-			return;
+			// LOD splat: check if its parent cluster is selected for LOD rendering
+			if (!UseLODRendering || !IsLODClusterSelected(clusterIndex))
+			{
+				// Parent cluster not selected for LOD - skip this LOD splat
+				FGaussianSplatViewData viewData;
+				viewData.ClipPosition = float4(0, 0, 0, -1);
+				viewData.PackedColorRG = 0;
+				viewData.PackedColorBA = 0;
+				viewData.Axis1 = float2(0, 0);
+				viewData.Axis2 = float2(0, 0);
+				viewData.ClusterID = clusterIndex;
+				viewData.Padding = 1; // Non-zero indicates LOD level
+				ViewDataBuffer[splatIndex] = viewData;
+				return;
+			}
+			selectedClusterID = clusterIndex;
+			selectedLODLevel = 1; // LOD splat
 		}
-
-		// LOD Rendering: Skip original splats when covered by a parent's LOD representation
-		// If selectedClusterID != leafClusterIndex, this leaf's splats are replaced by parent LOD splats
-		if (UseLODRendering && selectedClusterID != leafClusterIndex)
+		else
 		{
-			// This splat is covered by a parent LOD - skip it
-			FGaussianSplatViewData viewData;
-			viewData.ClipPosition = float4(0, 0, 0, -1); // Invalid marker
-			viewData.PackedColorRG = 0;
-			viewData.PackedColorBA = 0;
-			viewData.Axis1 = float2(0, 0);
-			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[splatIndex] = viewData;
-			return;
+			// Original splat: use leaf cluster visibility logic
+			uint leafClusterIndex = clusterIndex;
+
+			// Get the selected cluster ID and LOD level from the LOD selection (Nanite-style)
+			// Lower 24 bits = cluster ID, upper 8 bits = LOD level (packed by ClusterCulling)
+			uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
+			selectedClusterID = packedSelected & 0x00FFFFFF;
+			selectedLODLevel = (packedSelected >> 24) & 0xFF;
+
+			if (!IsClusterVisible(leafClusterIndex))
+			{
+				// Leaf cluster is culled - mark splat as invalid
+				FGaussianSplatViewData viewData;
+				viewData.ClipPosition = float4(0, 0, 0, -1);
+				viewData.PackedColorRG = 0;
+				viewData.PackedColorBA = 0;
+				viewData.Axis1 = float2(0, 0);
+				viewData.Axis2 = float2(0, 0);
+				viewData.ClusterID = selectedClusterID;
+				viewData.Padding = selectedLODLevel;
+				ViewDataBuffer[splatIndex] = viewData;
+				return;
+			}
+
+			// LOD Rendering: Skip original splats when covered by a parent's LOD representation
+			if (UseLODRendering && selectedClusterID != leafClusterIndex)
+			{
+				// This splat is covered by a parent LOD - skip it (LOD splats will render instead)
+				FGaussianSplatViewData viewData;
+				viewData.ClipPosition = float4(0, 0, 0, -1);
+				viewData.PackedColorRG = 0;
+				viewData.PackedColorBA = 0;
+				viewData.Axis1 = float2(0, 0);
+				viewData.Axis2 = float2(0, 0);
+				viewData.ClusterID = selectedClusterID;
+				viewData.Padding = selectedLODLevel;
+				ViewDataBuffer[splatIndex] = viewData;
+				return;
+			}
 		}
 	}
 

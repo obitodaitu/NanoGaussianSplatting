@@ -366,15 +366,15 @@ void FGaussianClusterBuilder::CalculateClusterError(
 }
 
 //----------------------------------------------------------------------
-// LOD Generation
+// LOD Generation (Unified Approach - LOD splats use same format as original splats)
 //----------------------------------------------------------------------
 
-FGaussianLODSplat FGaussianClusterBuilder::MergeGaussians(
+FGaussianSplatData FGaussianClusterBuilder::MergeGaussians(
 	const TArray<FGaussianSplatData>& Splats,
 	int32 StartIndex,
 	int32 Count)
 {
-	FGaussianLODSplat Result;
+	FGaussianSplatData Result;
 
 	if (Count <= 0 || StartIndex < 0 || StartIndex >= Splats.Num())
 	{
@@ -398,7 +398,7 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeGaussians(
 
 	// Weighted centroid position
 	FVector3f WeightedPosition = FVector3f::ZeroVector;
-	FVector3f WeightedColor = FVector3f::ZeroVector;
+	FVector3f WeightedSHDC = FVector3f::ZeroVector;
 
 	for (int32 i = 0; i < Count; i++)
 	{
@@ -407,13 +407,12 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeGaussians(
 
 		WeightedPosition += Splat.Position * Weight;
 
-		// Convert SH DC to color for averaging
-		FVector3f Color = GaussianSplattingUtils::SHDCToColor(Splat.SH_DC);
-		WeightedColor += Color * Weight;
+		// Average SH_DC directly (keeps same format as original splats)
+		WeightedSHDC += Splat.SH_DC * Weight;
 	}
 
 	Result.Position = WeightedPosition;
-	Result.Color = WeightedColor;
+	Result.SH_DC = WeightedSHDC;
 
 	// Combined scale: use average scale expanded to cover the merged region
 	// This is an approximation - proper covariance merging would be more complex
@@ -453,15 +452,21 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeGaussians(
 	}
 	Result.Opacity = FMath::Clamp(1.0f - CombinedTransparency, 0.0f, 1.0f);
 
+	// Zero out SH coefficients (LOD splats don't need view-dependent effects)
+	for (int32 i = 0; i < 15; i++)
+	{
+		Result.SH[i] = FVector3f::ZeroVector;
+	}
+
 	return Result;
 }
 
-FGaussianLODSplat FGaussianClusterBuilder::MergeLODSplats(
-	const TArray<FGaussianLODSplat>& LODSplats,
+FGaussianSplatData FGaussianClusterBuilder::MergeLODSplats(
+	const TArray<FGaussianSplatData>& LODSplats,
 	int32 StartIndex,
 	int32 Count)
 {
-	FGaussianLODSplat Result;
+	FGaussianSplatData Result;
 
 	if (Count <= 0 || StartIndex < 0 || StartIndex >= LODSplats.Num())
 	{
@@ -484,18 +489,18 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeLODSplats(
 
 	// Weighted averages
 	FVector3f WeightedPosition = FVector3f::ZeroVector;
-	FVector3f WeightedColor = FVector3f::ZeroVector;
+	FVector3f WeightedSHDC = FVector3f::ZeroVector;
 	FVector3f AvgScale = FVector3f::ZeroVector;
 	FVector3f MinPos = FVector3f(MAX_FLT);
 	FVector3f MaxPos = FVector3f(-MAX_FLT);
 
 	for (int32 i = 0; i < Count; i++)
 	{
-		const FGaussianLODSplat& Splat = LODSplats[StartIndex + i];
+		const FGaussianSplatData& Splat = LODSplats[StartIndex + i];
 		float Weight = Splat.Opacity / TotalWeight;
 
 		WeightedPosition += Splat.Position * Weight;
-		WeightedColor += Splat.Color * Weight;
+		WeightedSHDC += Splat.SH_DC * Weight;
 		AvgScale += Splat.Scale * Weight;
 
 		MinPos = FVector3f(
@@ -509,7 +514,7 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeLODSplats(
 	}
 
 	Result.Position = WeightedPosition;
-	Result.Color = WeightedColor;
+	Result.SH_DC = WeightedSHDC;
 
 	FVector3f Spread = (MaxPos - MinPos) * 0.5f;
 	Result.Scale = AvgScale + Spread * 0.5f;
@@ -522,6 +527,12 @@ FGaussianLODSplat FGaussianClusterBuilder::MergeLODSplats(
 		CombinedTransparency *= (1.0f - FMath::Clamp(LODSplats[StartIndex + i].Opacity, 0.0f, 1.0f));
 	}
 	Result.Opacity = FMath::Clamp(1.0f - CombinedTransparency, 0.0f, 1.0f);
+
+	// Zero out SH coefficients (LOD splats don't need view-dependent effects)
+	for (int32 i = 0; i < 15; i++)
+	{
+		Result.SH[i] = FVector3f::ZeroVector;
+	}
 
 	return Result;
 }
@@ -572,7 +583,7 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 
 					if (SrcCount > 0)
 					{
-						FGaussianLODSplat MergedSplat = MergeGaussians(Splats, SrcStart, SrcCount);
+						FGaussianSplatData MergedSplat = MergeGaussians(Splats, SrcStart, SrcCount);
 						Hierarchy.LODSplats.Add(MergedSplat);
 						NextLODSplatIndex++;
 
@@ -593,8 +604,8 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 			}
 			else
 			{
-				// Higher LOD levels - merge from children's LOD splats
-				TArray<FGaussianLODSplat> ChildLODSplats;
+				// Higher LOD levels - merge from children's LOD splats (unified format)
+				TArray<FGaussianSplatData> ChildLODSplats;
 
 				// Also find max child error for compound error propagation
 				float MaxChildError = 0.0f;
@@ -633,7 +644,7 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 
 						if (SrcCount > 0)
 						{
-							FGaussianLODSplat MergedSplat = MergeLODSplats(ChildLODSplats, SrcStart, SrcCount);
+							FGaussianSplatData MergedSplat = MergeLODSplats(ChildLODSplats, SrcStart, SrcCount);
 							Hierarchy.LODSplats.Add(MergedSplat);
 							NextLODSplatIndex++;
 

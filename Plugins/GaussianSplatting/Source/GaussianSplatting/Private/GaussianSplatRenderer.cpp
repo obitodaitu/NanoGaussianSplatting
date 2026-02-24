@@ -93,21 +93,17 @@ void FGaussianSplatRenderer::Render(
 			// UE_LOG(LogTemp, Log, TEXT("Cluster culling: %d / %d clusters visible"), VisibleClusters, GPUResources->LeafClusterCount);
 		}
 
-		// Step 1: Calculate view data for each splat
-		// When LOD rendering is enabled, splats covered by parent LOD clusters are skipped
+		// Step 1: Calculate view data for each splat (UNIFIED APPROACH)
+		// Processes both original and LOD splats in the same buffer
+		// Original splats: check ClusterVisibilityBitmap + LOD skip logic
+		// LOD splats: check LODClusterSelectedBitmap
 		DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture, bUseLODRendering);
 
-		// Step 1.5: GPU-driven LOD rendering - process ALL LOD splats on GPU
-		// Non-selected clusters' splats are rejected in the shader (no CPU readback)
-		if (bUseLODRendering)
-		{
-			DispatchCalcLODViewDataGPUDriven(RHICmdList, View, GPUResources, LocalToWorld, OpacityScale, SplatScale);
-			DispatchUpdateDrawArgs(RHICmdList, GPUResources);
-		}
+		// NOTE: Separate LOD pass removed - unified approach handles LOD splats in CalcViewData
 
 		// Step 2: Calculate sort distances
-		// Use TotalSplatCount when LOD rendering is enabled to process LOD splats too
-		int32 SortCount = bUseLODRendering ? GPUResources->TotalSplatCount : SplatCount;
+		// SplatCount now includes both original and LOD splats (unified buffer)
+		int32 SortCount = SplatCount;
 		DispatchCalcDistances(RHICmdList, GPUResources, SortCount);
 
 		// Step 3: Sort splats back-to-front
@@ -163,23 +159,29 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
-	// Cluster visibility integration
+	// Cluster visibility integration (UNIFIED APPROACH)
+	// SplatClusterIndexBuffer maps ALL splats (original + LOD) to their clusters
 	if (GPUResources->bHasClusterData && GPUResources->SplatClusterIndexBufferSRV.IsValid())
 	{
 		Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
 		Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
+		Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
 		Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
 		Parameters.UseClusterCulling = 1;
 		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
+		// OriginalSplatCount = TotalSplatCount - LODSplatCount
+		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
 	}
 	else
 	{
 		// No cluster data - process all splats
 		Parameters.SplatClusterIndexBuffer = nullptr;
 		Parameters.ClusterVisibilityBitmap = nullptr;
+		Parameters.LODClusterSelectedBitmap = nullptr;
 		Parameters.SelectedClusterBuffer = nullptr;
 		Parameters.UseClusterCulling = 0;
 		Parameters.UseLODRendering = 0;
+		Parameters.OriginalSplatCount = SplatCount;
 	}
 
 	// Matrices
@@ -499,115 +501,9 @@ void FGaussianSplatRenderer::DrawSplats(
 	}
 }
 
-void FGaussianSplatRenderer::DispatchCalcLODViewDataGPUDriven(
-	FRHICommandListImmediate& RHICmdList,
-	const FSceneView& View,
-	FGaussianSplatGPUResources* GPUResources,
-	const FMatrix& LocalToWorld,
-	float OpacityScale,
-	float SplatScale)
-{
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcLODViewDataGPUDriven);
-
-	if (!GPUResources->bHasLODSplats || GPUResources->LODSplatCount == 0)
-	{
-		return;
-	}
-
-	if (!GPUResources->LODSplatClusterIndexBufferSRV.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("LODSplatClusterIndexBuffer not available for GPU-driven LOD rendering"));
-		return;
-	}
-
-	TShaderMapRef<FGaussianSplatCalcLODViewDataGPUDrivenCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-
-	if (!ComputeShader.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FGaussianSplatCalcLODViewDataGPUDrivenCS shader not valid"));
-		return;
-	}
-
-	// Transition buffers for compute
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::SRVCompute, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-
-	// LODClusterSelectedBitmap should already be in SRVCompute from cluster culling
-	// (it was transitioned but we need to ensure it's readable)
-
-	FGaussianSplatCalcLODViewDataGPUDrivenCS::FParameters Parameters;
-	Parameters.LODSplatBuffer = GPUResources->LODSplatBufferSRV;
-	Parameters.LODSplatClusterIndexBuffer = GPUResources->LODSplatClusterIndexBufferSRV;
-	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
-	Parameters.ClusterBuffer = GPUResources->ClusterBufferSRV;
-	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
-	Parameters.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
-
-	// Matrices
-	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
-	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
-
-	// Screen info
-	FIntRect ViewRect = View.UnscaledViewRect;
-	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
-
-	// Focal length from projection matrix
-	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
-	Parameters.FocalLength = FVector2f(
-		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
-		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
-	);
-
-	Parameters.TotalLODSplats = GPUResources->LODSplatCount;
-	Parameters.OutputStartIndex = GPUResources->GetSplatCount();  // Write after original splats
-	Parameters.SplatScale = SplatScale;
-	Parameters.OpacityScale = OpacityScale;
-	Parameters.ClusterCount = GPUResources->ClusterCount;
-
-	// Dispatch compute shader
-	const uint32 ThreadGroupSize = 256;
-	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)GPUResources->LODSplatCount, ThreadGroupSize);
-
-	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
-	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
-	RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
-	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
-
-	// Transition buffers for next stage
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-}
-
-void FGaussianSplatRenderer::DispatchUpdateDrawArgs(
-	FRHICommandListImmediate& RHICmdList,
-	FGaussianSplatGPUResources* GPUResources)
-{
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatUpdateDrawArgs);
-
-	TShaderMapRef<FUpdateDrawArgsCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-
-	if (!ComputeShader.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FUpdateDrawArgsCS shader not valid"));
-		return;
-	}
-
-	// Transition IndirectDrawArgsBuffer back to UAV for update
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
-
-	FUpdateDrawArgsCS::FParameters Parameters;
-	Parameters.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
-	Parameters.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferSRV;
-
-	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
-	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
-	RHICmdList.DispatchComputeShader(1, 1, 1);
-	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
-
-	// Transition back to IndirectArgs for draw call
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-}
+// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
+// in the unified approach. LOD splats are now processed by CalcViewData shader using
+// the same buffers as original splats.
 
 void FGaussianSplatRenderer::ExtractFrustumPlanes(const FMatrix& ViewProjection, FVector4f OutPlanes[6])
 {

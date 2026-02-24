@@ -8,7 +8,60 @@
 ***一定會用GPU，有必要保留CPU的cluster type嗎? 應該不用，把他刪掉
 ***轉成Nanite的PLY points有辦法回復嗎?
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
+***點的數量很少或很多的情況怎麼辦?
 **************************************************************************************************
+gs.DebugForceLODLevel 0
+
+Don't modify the code.
+Let's discuss first.
+
+It looks a bit better now but still wrong.
+Some points' position are still not correct.
+The color seems to have color space issue as well.
+Seems like lots of LOD splat has data mismatch.
+
+As I know we have done some data compression design in our plugin.
+However I guess those data compression or data pruning design caused the data easily to be mismatched.
+I don't want to spend time debugging each data one by one and see they are matched or not.
+If the original splats(leaf cluster) render correctly, can we just use this data as the source of truth?
+I think having one source of truth data structure will easily by pass the data mismatch issue.
+Can you help me investigate where we do the data compression inside the plugin?
+Especially for high level LOD cluster.
+Is it possible to have no data compression or data pruning and make the data easier to match with each other?
+
+
+
+
+
+
+請他列出目前檔案做的壓縮 > 資料壓縮或簡化都會造成mismatch
+
+
+- 會不會是GPU資料壓縮有錯? 這個資料mismatch是怎麼造成的? 
+- 也許先從merge position開始，至少確認position是對的 > 現在high level splat的position絕對是錯的
+
+
+
+看起來目前不管怎麼算都只會有5階LOD cluster!?只是每個cluster點的數量不同而已
+LOD 0, 每個cluster 128個點
+LOD 1 , 每個cluster 128/4=32 個點
+LOD 2 , 每個cluster 128/4/4=8 個點
+LOD 3 , 每個cluster 128/4/4/4=2 個點
+
+
+***會不會又是GPU壓縮機制造成的?
+
+Okay. So the result is quite obvious.
+Only the leaf cluster is correct.
+Tell me how higher level LOD cluster got created.
+
+As I remembered, we will merged the adjacent points into a single points by blending their position, rotation and color data right?
+Tell me how we actually merge it in our code.
+Also, how we decide how many points that will be used for merging into a higher level cluster?
+How we decide which points to merge into a higher level cluster?
+I only know each parent cluster will only have 25% point counts of it's child clusters combined.
+Is this correct?
+
 
 
 感覺是高階的LOD的資料亂了
@@ -17,11 +70,12 @@
 
 
   Usage examples:
-  gs.DebugForceLODLevel 0    // Force finest detail (leaf clusters only)
+      // Force finest detail (leaf clusters only)
   gs.DebugForceLODLevel 1    // Force LOD level 1
   gs.DebugForceLODLevel 2    // Force LOD level 2
   gs.DebugForceLODLevel -1   // Return to auto mode
-
+-----------------------------------------------------------------------------------------
+[Cluster的結構長這樣]
   For your 719k splat asset, approximate structure:
   ┌───────────┬──────────┬─────────────────────┐
   │ LOD Level │ Clusters │     Description     │
@@ -37,7 +91,34 @@
   │ 4         │ ~2       │ Fourth merged level │
   ├───────────┼──────────┼─────────────────────┤
   │ 5         │ 1        │ Root cluster        │
+  └───────────┴──────────┴─────────────────────┘
 
+  For your 1.5M splat asset, approximate structure:
+  ┌───────────┬───────────┬─────────────────────┐
+  │ LOD Level │ Clusters  │     Description     │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 0 (leaf)  │ ~11718    │ Original splats     │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 1         │ ~1464     │ First merged level  │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 2         │ ~183      │ Second merged level │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 3         │ ~22       │ Third merged level  │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 4         │ ~2        │ Fourth merged level │
+  ├───────────┼───────────┼─────────────────────┤
+  │ 5         │ 1         │ Root cluster        │
+  └───────────┴───────────┴─────────────────────┘
+
+
+[每個cluster點的數量長這樣]
+  LOD Level 0 (Leaf):     128 original splats per cluster
+  LOD Level 1:            128/4 = 32 LOD splats per cluster (merge 4 splats → 1)
+  LOD Level 2:            32/4 = 8 LOD splats per cluster
+  LOD Level 3:            8/4 = 2 LOD splats per cluster
+  LOD Level 4:            2/4 = 1 LOD splat per cluster
+
+-----------------------------------------------------------------------------------------
 
 This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
 It can import and render gaussian splatting PLY file inside Unreal Engine.

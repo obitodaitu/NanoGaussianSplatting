@@ -152,8 +152,34 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 
 	if (bClusteringSucceeded)
 	{
-		UE_LOG(LogTemp, Log, TEXT("Built cluster hierarchy: %d clusters, %d LOD levels"),
-			ClusterHierarchy.Clusters.Num(), ClusterHierarchy.NumLODLevels);
+		UE_LOG(LogTemp, Log, TEXT("Built cluster hierarchy: %d clusters, %d LOD levels, %d LOD splats"),
+			ClusterHierarchy.Clusters.Num(), ClusterHierarchy.NumLODLevels, ClusterHierarchy.LODSplats.Num());
+
+		// UNIFIED APPROACH: Append LOD splats to main splat array
+		// This ensures all splats use the same data format and GPU buffers
+		if (ClusterHierarchy.LODSplats.Num() > 0)
+		{
+			const int32 OriginalSplatCount = SplatData.Num();
+
+			// Update cluster LODSplatStartIndex to point into unified buffer
+			// (original offset + original splat count = new offset in unified buffer)
+			for (FGaussianCluster& Cluster : ClusterHierarchy.Clusters)
+			{
+				if (Cluster.LODSplatCount > 0)
+				{
+					Cluster.LODSplatStartIndex += OriginalSplatCount;
+				}
+			}
+
+			// Append LOD splats to main splat array
+			SplatData.Append(ClusterHierarchy.LODSplats);
+
+			UE_LOG(LogTemp, Log, TEXT("Unified buffer: %d original + %d LOD = %d total splats"),
+				OriginalSplatCount, ClusterHierarchy.LODSplats.Num(), SplatData.Num());
+
+			// Clear LODSplats from hierarchy (now stored in main buffer)
+			ClusterHierarchy.LODSplats.Empty();
+		}
 	}
 	else
 	{
@@ -178,7 +204,7 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	// Store source file path
 	Asset->SourceFilePath = FilePath;
 
-	// Initialize asset from splat data (uses reordered splats if clustering succeeded)
+	// Initialize asset from splat data (now includes LOD splats in unified format)
 	SlowTask.EnterProgressFrame(45.0f, FText::FromString(TEXT("Compressing splat data...")));
 
 	Asset->InitializeFromSplatData(SplatData, QualityLevel);

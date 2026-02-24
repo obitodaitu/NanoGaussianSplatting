@@ -94,26 +94,8 @@ public:
 		bool bUseLODRendering = false
 	);
 
-	/**
-	 * Dispatch GPU-driven LOD view data calculation
-	 * Processes ALL LOD splats on GPU, rejects non-selected ones - no CPU readback needed
-	 */
-	static void DispatchCalcLODViewDataGPUDriven(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		float OpacityScale,
-		float SplatScale
-	);
-
-	/**
-	 * Dispatch shader to update indirect draw args with LOD splat count
-	 */
-	static void DispatchUpdateDrawArgs(
-		FRHICommandListImmediate& RHICmdList,
-		FGaussianSplatGPUResources* GPUResources
-	);
+	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
+	// in the unified approach. LOD splats are now processed by DispatchCalcViewData.
 
 private:
 	/** Calculate next power of 2 */
