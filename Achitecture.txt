@@ -31,7 +31,7 @@ I want to make the debug color more like Nanite and not washed out.
 
 
 
-
+*重新生成solution file
 *有一直閃的點是怎麼回是usf?
 *splat的前後錯了
 *邊緣有點糊糊的，看能不能改善
