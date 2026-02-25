@@ -32,6 +32,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - [ ] Dynamic load and unload macro tiles
 - [ ] Anti Aliasing
 - [ ] Performance Tracking (insight, render pass)
+- [ ] Support relight
 
 ## How To Use It
 - Simply press the import button to import PLY file
