@@ -13,6 +13,7 @@
 #include "PipelineStateCache.h"
 #include "RHIStaticStates.h"
 #include "SceneView.h"
+#include "SceneRendering.h"  // For FViewInfo::ViewRect (screen percentage support)
 #include "RenderCore.h"
 #include "CommonRenderResources.h"
 
@@ -224,8 +225,10 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
-	// Screen info
-	FIntRect ViewRect = View.UnscaledViewRect;
+	// Screen info - use FViewInfo::ViewRect which accounts for screen percentage
+	// This is the actual render target viewport, scaled when screen percentage < 100%
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+	FIntRect ViewRect = ViewInfo.ViewRect;
 	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
 
 	// Focal length approximation from projection matrix
@@ -479,8 +482,10 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-	// Set viewport to match the view rect - critical for correct rendering when viewport is resized
-	FIntRect ViewRect = View.UnscaledViewRect;
+	// Set viewport using FViewInfo::ViewRect which accounts for screen percentage
+	// This matches the actual render target dimensions
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+	FIntRect ViewRect = ViewInfo.ViewRect;
 	RHICmdList.SetViewport(
 		ViewRect.Min.X,
 		ViewRect.Min.Y,
@@ -679,8 +684,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
-	// Screen info
-	FIntRect ViewRect = View.UnscaledViewRect;
+	// Screen info - use FViewInfo::ViewRect which accounts for screen percentage
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+	FIntRect ViewRect = ViewInfo.ViewRect;
 	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
 
 	// Focal length
@@ -930,7 +936,9 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 
 		// LOD selection parameters
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
-		FIntRect ViewRect = View.UnscaledViewRect;
+		// Use FViewInfo::ViewRect for screen-based LOD calculations (accounts for screen percentage)
+		const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+		FIntRect ViewRect = ViewInfo.ViewRect;
 		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
 		CullingParams.ErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)

@@ -15,6 +15,9 @@ public class GaussianSplatting : ModuleRules
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
+				// Access Renderer private headers for FViewInfo::ViewRect (screen percentage support)
+				System.IO.Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Private"),
+				System.IO.Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal"),
 			}
 		);
 

@@ -7,45 +7,20 @@
 ***點的數量很少或很多的情況怎麼辦?
 ***螢幕拉伸的時候depth好像會算錯 > splats跟mesh的上下關係會錯
 ***把gaussian splat在content browser從component改成actor，我希望可以直接drag and drop而不是還要創一個actor, assign component
+***測試看看渲染 > movie render queue
+*邊緣有點糊糊的，看能不能改善 > 應該是merge的做法要再優化，會出現超大的點 > force每一層LOD去檢視細節 > 主要是edge會特別明顯
+*目前cluster的切換有點太明顯了
+*bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 **************************************************************************************************
 
-[閃爍問題]
-*有一直閃的點是怎麼回是usf? 這肯定是跟shader還有GPU相關 > 會有一陣抖動再穩定下來是為什麼? 感覺是一直在計算?
-
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
-
-Currently I am building a feature which can render the gaussian splats based on the cluster.
-The idea is inspired by Unreal Engine's Nanite.
-No need to render all the gaussian splat points all the time.
-Just render the details required for the screen.
-Although it feature is working now, it has some issue.
-
-I got some gaussian splat assets placed in the level.
-When I first open the level, the splats will become very noisy.
-Then it will be come stable after we wait for a while, which looks very weird.
-The noisy splats are flashing very fast and moving around the assets. 
-Looks like it's doing some sorting related task.
-Although the process looks very noisy, it didn't affect the performance.
-The performance is still pretty good.
-It's just very ugly and scary.
-
-Also, we will see ghost noise happened at the edge of the screen.
-Ghost noise mean the asset is already not there in the screen, but still some noisy splat appear there.
-Then the ghost noise will disappear after we wait for a while. 
-
-No matter gussian splatting Nanite feature got enabled or not, the noisy sorting still exist.
-So probably not directly related to Nanite feature itself.
-It's just if we enable the Nanite feature, the splats flash more crazier.
-I have confidence that the issue should be GPU related but I am not sure how exactly it happen.
-Can you help me investigate what is going on?
 
 
 
-	- I think it's a kind of sorting > investigate the sorting 
-	- no matter Nanite got enabled or not, the noisy sorting still exist
-	- ghost noise happened at the edge of the screen
-	- The issue should be GPU related but I am not sure how exactly it happen
+
+
+
+*會有GS渲染壓在static mesh的preview上，是為什麼?
+*加直接drag and drop的功能
 
 
 [Nanite的打開與關閉]
@@ -54,15 +29,11 @@ Can you help me investigate what is going on?
 - nanite debug mode應該要能看出差別
 - command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
 - disable nanite會沒辦法渲染
+- gs.UseCompaction > 這應該不需要留著，我們會一直使用compact mode才對
 
 
 
 
-*加直接drag and drop的功能
-*會有GS渲染壓在static mesh的preview上，是為什麼?
-*邊緣有點糊糊的，看能不能改善 > 應該是merge的做法要再優化，會出現超大的點 > force每一層LOD去檢視細節 > 主要是edge會特別明顯
-*目前cluster的切換有點太明顯了
-*bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 
 
 
