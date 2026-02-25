@@ -726,6 +726,18 @@ void FGaussianSplatRenderer::DispatchCalcDistancesIndirect(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
+	// CRITICAL FIX: Clear distance buffer to 0xFFFFFFFF before indirect dispatch.
+	// In compaction mode, CalcDistancesIndirect only writes to elements 0..VisibleSplatCount-1,
+	// but RadixSort sorts ALL TotalSplatCount elements. Without this clear, uninitialized
+	// elements (VisibleSplatCount..TotalSplatCount-1) contain garbage distances that can
+	// sort into the first VisibleSplatCount positions, causing ghost noise and flickering.
+	// Setting unused elements to 0xFFFFFFFF (max uint) ensures they sort to the END
+	// (back-to-front uses ascending sort), where DrawSplats never reads them.
+	RHICmdList.ClearUAVUint(GPUResources->SortDistanceBufferUAV, FUintVector4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF));
+
+	// UAV barrier after clear to ensure clear completes before compute shader writes
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
 	FGaussianSplatCalcDistancesCS::FParameters Parameters;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferSRV;
 	Parameters.DistanceBuffer = GPUResources->SortDistanceBufferUAV;
