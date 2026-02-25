@@ -31,7 +31,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - [ ] Dynamic switching micro LOD
 - [ ] Dynamic load and unload macro tiles
 - [ ] Anti Aliasing
-- [ ] Performance Tracking
+- [ ] Performance Tracking (insight, render pass)
 
 ## How To Use It
 - Simply press the import button to import PLY file
