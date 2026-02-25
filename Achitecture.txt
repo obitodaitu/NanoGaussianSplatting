@@ -2,41 +2,26 @@
 [To Do list]
 ***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
 ***SH function目前是失敗的
-***轉成Nanite的PLY points有辦法回復嗎?
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
-***螢幕拉伸的時候depth好像會算錯 > splats跟mesh的上下關係會錯
-***把gaussian splat在content browser從component改成actor，我希望可以直接drag and drop而不是還要創一個actor, assign component
-***測試看看渲染 > movie render queue
+
 *邊緣有點糊糊的，看能不能改善 > 應該是merge的做法要再優化，會出現超大的點 > force每一層LOD去檢視細節 > 主要是edge會特別明顯
 *目前cluster的切換有點太明顯了
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 **************************************************************************************************
+[Render]
+	- render preview沒問題但 render result有問題，為什麼?
+
+I tired render the gaussian splat asset with movie render queue.
+However there is an issue.
+If I use Movie Render Queue to render png images, the gaussian splat asset area will be clipped out and it's alpha.
+Maybe because gaussian splat has opacity value?
+If I render with JPG then it's fine.
+Do you know why and how to fix it?
 
 
 
 
-
-
-
-[Drag and drop directly]
-*把gaussian splat actor 從+號中移除
-
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine. 
-
-The static mesh we saw in content browser is static mesh component right? 
-As I know only actor can be placed in the level.
-Why we can drag the static mesh component and drop it into the level?
-How is the mechanism behind it?
-
-Is it possible to add this feature to our Gaussian Splat Asset as well.
-Currently I am not allowed to drag and drop the Gaussian Splat Asset directly into the level.
-
-Instead, I need to press the plus icon, choose Gaussian Splat Actor to spawn it into the level, then manually assign the gaussian splat asset to the Gaussian Splat Actor.
-I want to make it easier.
-I don't want the Gaussian Splat Actor exist in the plus icon anymore.
-Just drag and drop from the content browser that's it.
 
 
 [Nanite的打開與關閉]
@@ -46,9 +31,9 @@ Just drag and drop from the content browser that's it.
 - command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
 - disable nanite會沒辦法渲染
 - gs.UseCompaction > 這應該不需要留著，我們會一直使用compact mode才對
+- 轉成Nanite的PLY points有辦法回復嗎?
 
 
-A
 
 
 
