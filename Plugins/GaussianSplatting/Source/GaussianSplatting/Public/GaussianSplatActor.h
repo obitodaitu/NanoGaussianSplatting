@@ -10,9 +10,9 @@ class UGaussianSplatComponent;
 
 /**
  * Simple actor for placing Gaussian Splats in the level.
- * Use this instead of Blueprint actors for better editor performance.
+ * Drag and drop a Gaussian Splat Asset from the Content Browser to spawn this actor.
  */
-UCLASS()
+UCLASS(NotPlaceable)
 class GAUSSIANSPLATTING_API AGaussianSplatActor : public AActor
 {
 	GENERATED_BODY()
