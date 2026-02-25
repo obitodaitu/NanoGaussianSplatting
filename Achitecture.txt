@@ -20,6 +20,19 @@
 
 
 *會有GS渲染壓在static mesh的preview上，是為什麼?
+竟然會跑進asset preview裡?
+
+Nice the issue got fixed.
+
+Let's move on to another issue.
+If I open the level that include the gaussian splat object, of course I will see the gaussian splat object in the viewport.
+However if I then open the preview of a random static mesh by double click on the asset in content browser, the gaussian splat object appeared in the static mesh viewport as well!
+This is weird.
+If I go to another level where we don't have gaussian splats in the viewport then double click to open the static mesh preview, it's normal, just static mesh itself.
+Do you know what is the reason that cause the issue?
+
+
+
 *加直接drag and drop的功能
 
 

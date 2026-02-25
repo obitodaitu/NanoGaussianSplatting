@@ -202,6 +202,14 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					continue;
 				}
 
+				// Check if proxy belongs to the same scene as this view
+				// This prevents Gaussian splats from appearing in unrelated viewports
+				// (e.g., static mesh preview, material preview, etc.)
+				if (&Proxy->GetScene() != SceneView->Family->Scene)
+				{
+					continue;
+				}
+
 				// Check if proxy is shown in this view (respects visibility flags)
 				if (!Proxy->IsShown(SceneView))
 				{
