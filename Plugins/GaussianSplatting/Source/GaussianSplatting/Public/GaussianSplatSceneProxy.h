@@ -88,6 +88,21 @@ public:
 	FBufferRHIRef RadixDigitOffsetBuffer;
 	FUnorderedAccessViewRHIRef RadixDigitOffsetBufferUAV;
 
+	/** Sort indirect dispatch args buffer (for indirect radix sort)
+	 * Format: uint3 (NumTiles, 1, 1) - used by CountCS and ScatterCS
+	 * Written by PrepareIndirectArgs, read by DispatchIndirectComputeShader
+	 */
+	FBufferRHIRef SortIndirectArgsBuffer;
+	FUnorderedAccessViewRHIRef SortIndirectArgsBufferUAV;
+
+	/** Sort parameters buffer (for indirect radix sort)
+	 * Format: uint2 (SortCount, NumTiles)
+	 * Written by PrepareIndirectArgs, read by radix sort shaders
+	 */
+	FBufferRHIRef SortParamsBuffer;
+	FUnorderedAccessViewRHIRef SortParamsBufferUAV;
+	FShaderResourceViewRHIRef SortParamsBufferSRV;
+
 	/** Index buffer for quad rendering */
 	FBufferRHIRef IndexBuffer;
 

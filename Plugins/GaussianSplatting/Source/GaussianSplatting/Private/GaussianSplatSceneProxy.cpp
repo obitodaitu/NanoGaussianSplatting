@@ -161,6 +161,11 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	RadixHistogramBufferUAV.SafeRelease();
 	RadixDigitOffsetBuffer.SafeRelease();
 	RadixDigitOffsetBufferUAV.SafeRelease();
+	SortIndirectArgsBuffer.SafeRelease();
+	SortIndirectArgsBufferUAV.SafeRelease();
+	SortParamsBuffer.SafeRelease();
+	SortParamsBufferUAV.SafeRelease();
+	SortParamsBufferSRV.SafeRelease();
 	IndexBuffer.SafeRelease();
 	ColorTexture.SafeRelease();
 	ColorTextureSRV.SafeRelease();
@@ -467,6 +472,42 @@ void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICm
 		RadixDigitOffsetBuffer = RHICmdList.CreateBuffer(Desc);
 		RadixDigitOffsetBufferUAV = RHICmdList.CreateUnorderedAccessView(
 			RadixDigitOffsetBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Sort indirect dispatch args buffer: 3 uints {NumTiles, 1, 1} for CountCS/ScatterCS
+	{
+		const uint32 BufferSize = 3 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSortIndirectArgsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_DrawIndirect | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SortIndirectArgsBuffer = RHICmdList.CreateBuffer(Desc);
+		SortIndirectArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			SortIndirectArgsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Sort parameters buffer: 2 uints {SortCount, NumTiles} for radix sort shaders
+	{
+		const uint32 BufferSize = 2 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSortParamsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SortParamsBuffer = RHICmdList.CreateBuffer(Desc);
+		SortParamsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			SortParamsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		SortParamsBufferSRV = RHICmdList.CreateShaderResourceView(
+			SortParamsBuffer, FRHIViewDesc::CreateBufferSRV()
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 	}

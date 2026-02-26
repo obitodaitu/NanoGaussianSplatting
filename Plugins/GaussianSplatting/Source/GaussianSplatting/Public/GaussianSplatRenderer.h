@@ -71,6 +71,17 @@ public:
 	);
 
 	/**
+	 * Dispatch radix sort with indirect dispatch (GPU-driven sort count)
+	 * Uses SortIndirectArgsBuffer for CountCS/ScatterCS dispatch dimensions
+	 * and SortParamsBuffer for Count/NumTiles read by shaders.
+	 * Only sorts the visible splats after compaction.
+	 */
+	static void DispatchRadixSortIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
+	);
+
+	/**
 	 * Draw the Gaussian splats
 	 */
 	static void DrawSplats(

@@ -118,9 +118,8 @@ void FGaussianSplatRenderer::Render(
 			// Step 4: Calculate sort distances (indirect dispatch - only visible splats)
 			DispatchCalcDistancesIndirect(RHICmdList, GPUResources);
 
-			// Step 5: Sort splats back-to-front
-			// Note: Sort still operates on max buffer size, but invalid entries sort to end
-			DispatchRadixSort(RHICmdList, GPUResources, SplatCount);
+			// Step 5: Sort splats back-to-front (INDIRECT - only sorts visible splats)
+			DispatchRadixSortIndirect(RHICmdList, GPUResources);
 		}
 		else
 		{
@@ -344,6 +343,8 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	// SortParamsBuffer is bound as SRV (unused when UseIndirectSort=0, but needs valid state)
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 
 	// 4 radix passes: bits 0-7, 8-15, 16-23, 24-31
 	for (uint32 Pass = 0; Pass < 4; Pass++)
@@ -357,9 +358,11 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			FRadixSortCountCS::FParameters Params;
 			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
 			Params.SrcKeys = DistUAVs[SrcIdx];
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
 			Params.RadixShift = RadixShift;
 			Params.Count = SortCount;
 			Params.NumTiles = NumTiles;
+			Params.UseIndirectSort = 0;
 
 			SetComputePipelineState(RHICmdList, CountShader.GetComputeShader());
 			SetShaderParameters(RHICmdList, CountShader, CountShader.GetComputeShader(), Params);
@@ -375,7 +378,9 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			FRadixSortPrefixSumCS::FParameters Params;
 			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
 			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
 			Params.NumTiles = NumTiles;
+			Params.UseIndirectSort = 0;
 
 			SetComputePipelineState(RHICmdList, PrefixSumShader.GetComputeShader());
 			SetShaderParameters(RHICmdList, PrefixSumShader, PrefixSumShader.GetComputeShader(), Params);
@@ -410,13 +415,156 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			Params.DstVals = KeyUAVs[DstIdx];
 			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
 			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
 			Params.RadixShift = RadixShift;
 			Params.Count = SortCount;
 			Params.NumTiles = NumTiles;
+			Params.UseIndirectSort = 0;
 
 			SetComputePipelineState(RHICmdList, ScatterShader.GetComputeShader());
 			SetShaderParameters(RHICmdList, ScatterShader, ScatterShader.GetComputeShader(), Params);
 			RHICmdList.DispatchComputeShader(NumTiles, 1, 1);
+			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
+		}
+
+		// UAV barriers between passes
+		RHICmdList.Transition(FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(KeyBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	}
+
+	// After 4 passes (even count), result is back in primary buffers [0]
+	// Transition SortKeysBuffer for rendering
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVGraphics));
+}
+
+void FGaussianSplatRenderer::DispatchRadixSortIndirect(
+	FRHICommandListImmediate& RHICmdList,
+	FGaussianSplatGPUResources* GPUResources)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRadixSort);
+
+	TShaderMapRef<FRadixSortCountCS> CountShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FRadixSortPrefixSumCS> PrefixSumShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FRadixSortDigitPrefixSumCS> DigitPrefixSumShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FRadixSortScatterCS> ScatterShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!CountShader.IsValid() || !PrefixSumShader.IsValid() ||
+		!DigitPrefixSumShader.IsValid() || !ScatterShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Radix sort shaders not valid"));
+		return;
+	}
+
+	// Distance buffers: [0] = primary, [1] = alt
+	FUnorderedAccessViewRHIRef DistUAVs[2] = {
+		GPUResources->SortDistanceBufferUAV,
+		GPUResources->SortDistanceBufferAltUAV
+	};
+	FBufferRHIRef DistBuffers[2] = {
+		GPUResources->SortDistanceBuffer,
+		GPUResources->SortDistanceBufferAlt
+	};
+
+	// Key buffers: [0] = primary, [1] = alt
+	FUnorderedAccessViewRHIRef KeyUAVs[2] = {
+		GPUResources->SortKeysBufferUAV,
+		GPUResources->SortKeysBufferAltUAV
+	};
+	FBufferRHIRef KeyBuffers[2] = {
+		GPUResources->SortKeysBuffer,
+		GPUResources->SortKeysBufferAlt
+	};
+
+	// Ensure alt buffers are in UAVCompute state
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	// SortIndirectArgsBuffer should already be in IndirectArgs state from DispatchPrepareIndirectArgs
+	// SortParamsBuffer should already be in SRVCompute state from DispatchPrepareIndirectArgs
+
+	// 4 radix passes: bits 0-7, 8-15, 16-23, 24-31
+	for (uint32 Pass = 0; Pass < 4; Pass++)
+	{
+		uint32 RadixShift = Pass * 8;
+		uint32 SrcIdx = Pass & 1;
+		uint32 DstIdx = 1 - SrcIdx;
+
+		// --- CountCS: build per-tile histograms (INDIRECT DISPATCH) ---
+		{
+			FRadixSortCountCS::FParameters Params;
+			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
+			Params.SrcKeys = DistUAVs[SrcIdx];
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
+			Params.RadixShift = RadixShift;
+			Params.Count = 0;       // Unused when UseIndirectSort=1
+			Params.NumTiles = 0;    // Unused when UseIndirectSort=1
+			Params.UseIndirectSort = 1;
+
+			SetComputePipelineState(RHICmdList, CountShader.GetComputeShader());
+			SetShaderParameters(RHICmdList, CountShader, CountShader.GetComputeShader(), Params);
+			RHICmdList.DispatchIndirectComputeShader(GPUResources->SortIndirectArgsBuffer, 0);
+			UnsetShaderUAVs(RHICmdList, CountShader, CountShader.GetComputeShader());
+		}
+
+		// UAV barrier
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
+		// --- PrefixSumCS: exclusive prefix sum per digit across tiles ---
+		// Fixed dispatch (256, 1, 1) - one group per digit
+		// NumTiles is read from SortParams buffer
+		{
+			FRadixSortPrefixSumCS::FParameters Params;
+			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
+			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
+			Params.NumTiles = 0;    // Unused when UseIndirectSort=1
+			Params.UseIndirectSort = 1;
+
+			SetComputePipelineState(RHICmdList, PrefixSumShader.GetComputeShader());
+			SetShaderParameters(RHICmdList, PrefixSumShader, PrefixSumShader.GetComputeShader(), Params);
+			RHICmdList.DispatchComputeShader(256, 1, 1);
+			UnsetShaderUAVs(RHICmdList, PrefixSumShader, PrefixSumShader.GetComputeShader());
+		}
+
+		// UAV barrier
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
+		// --- DigitPrefixSumCS: exclusive prefix sum across digit totals ---
+		// No changes needed - doesn't use Count or NumTiles
+		{
+			FRadixSortDigitPrefixSumCS::FParameters Params;
+			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
+
+			SetComputePipelineState(RHICmdList, DigitPrefixSumShader.GetComputeShader());
+			SetShaderParameters(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader(), Params);
+			RHICmdList.DispatchComputeShader(1, 1, 1);
+			UnsetShaderUAVs(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader());
+		}
+
+		// UAV barrier
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
+		// --- ScatterCS: scatter keys+values to sorted positions (INDIRECT DISPATCH) ---
+		{
+			FRadixSortScatterCS::FParameters Params;
+			Params.SrcKeys = DistUAVs[SrcIdx];
+			Params.SrcVals = KeyUAVs[SrcIdx];
+			Params.DstKeys = DistUAVs[DstIdx];
+			Params.DstVals = KeyUAVs[DstIdx];
+			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
+			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
+			Params.SortParams = GPUResources->SortParamsBufferSRV;
+			Params.RadixShift = RadixShift;
+			Params.Count = 0;       // Unused when UseIndirectSort=1
+			Params.NumTiles = 0;    // Unused when UseIndirectSort=1
+			Params.UseIndirectSort = 1;
+
+			SetComputePipelineState(RHICmdList, ScatterShader.GetComputeShader());
+			SetShaderParameters(RHICmdList, ScatterShader, ScatterShader.GetComputeShader(), Params);
+			RHICmdList.DispatchIndirectComputeShader(GPUResources->SortIndirectArgsBuffer, 0);
 			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
 		}
 
@@ -619,11 +767,15 @@ void FGaussianSplatRenderer::DispatchPrepareIndirectArgs(
 	// Transition buffers
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDispatchArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortIndirectArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FPrepareIndirectArgsCS::FParameters Parameters;
 	Parameters.VisibleSplatCount = GPUResources->VisibleSplatCountBufferSRV;
 	Parameters.IndirectDispatchArgs = GPUResources->IndirectDispatchArgsBufferUAV;
 	Parameters.IndirectDrawArgs = GPUResources->IndirectDrawArgsBufferUAV;
+	Parameters.SortIndirectArgs = GPUResources->SortIndirectArgsBufferUAV;
+	Parameters.SortParamsBuffer = GPUResources->SortParamsBufferUAV;
 	Parameters.ComputeThreadGroupSize = 256;
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
@@ -634,6 +786,9 @@ void FGaussianSplatRenderer::DispatchPrepareIndirectArgs(
 	// Transition for indirect dispatch/draw
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDispatchArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+	// Transition sort buffers for radix sort indirect dispatch
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortIndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortParamsBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 }
 
 void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
@@ -737,17 +892,9 @@ void FGaussianSplatRenderer::DispatchCalcDistancesIndirect(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
-	// CRITICAL FIX: Clear distance buffer to 0xFFFFFFFF before indirect dispatch.
-	// In compaction mode, CalcDistancesIndirect only writes to elements 0..VisibleSplatCount-1,
-	// but RadixSort sorts ALL TotalSplatCount elements. Without this clear, uninitialized
-	// elements (VisibleSplatCount..TotalSplatCount-1) contain garbage distances that can
-	// sort into the first VisibleSplatCount positions, causing ghost noise and flickering.
-	// Setting unused elements to 0xFFFFFFFF (max uint) ensures they sort to the END
-	// (back-to-front uses ascending sort), where DrawSplats never reads them.
-	RHICmdList.ClearUAVUint(GPUResources->SortDistanceBufferUAV, FUintVector4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF));
-
-	// UAV barrier after clear to ensure clear completes before compute shader writes
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	// No need to clear distance buffer - indirect radix sort only sorts VisibleSplatCount elements,
+	// and DrawSplats only renders VisibleSplatCount instances via indirect draw.
+	// Unused buffer entries beyond VisibleSplatCount are never read.
 
 	FGaussianSplatCalcDistancesCS::FParameters Parameters;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferSRV;

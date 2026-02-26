@@ -5,6 +5,39 @@
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 ***整理筆記
 **************************************************************************************************
+
+[效能優化]
+	- 2070顯卡，放十幾個LOD 5 asset效能就不行了
+	- 切換到LOD5，還是花了很多時間在做radix sort!? > 看unreal Insight
+	- 700K*20 LOD0 > 20fps
+	- 700K*20 LOD5 > 40fps
+	- 並沒有辦法做到像Nanite一樣Asset自由
+
+
+This is an Unreal Engine plugin I created called GaussianSplatting "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting ply file inside Unreal Engine.
+
+I created a Nanite inspired cluster system but for gaussian splats.
+Instead of rendering all the gaussian splats all the time, the plugin will use the cluster system and screen space error to render  only the detailed needed for the screen.
+
+Although the system is working, the performance is not as good as I expected.
+I have a guassian splat asset with around 719K points for testing.
+I placed 20 assets into the level.
+The performance is not good.
+If I forced the Gaussian Splat LOD to 0, it will render the original quality and the fps is 20.
+If I forced the Gaussian Splat LOD to 5, which means the lowest quality for now, the the fps is 40.
+Although it's better but just a bit.
+I do ran Unreal Insight for tracking the performance.
+I send you the screenshot.
+Seems like gaussian splat radix sort is the performance killer.
+In the screen I can see LOD 5 does not have many points. 
+But why the performance is bad?
+Do you have any idea to improve the performance?
+
+
+
+
+
 [LOD切換更不明顯一點]
 	- force各LOD看細節如何
 	- LOD 2,3,4,5好像都有一些洞 > 但遠看其實看不到那些洞
