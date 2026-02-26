@@ -31,15 +31,6 @@ TAutoConsoleVariable<int32> CVarShowClusterBounds(
 	TEXT(" 1: Show cluster colors (each cluster gets a unique random color)"),
 	ECVF_RenderThreadSafe);
 
-/** Show cluster visibility statistics */
-TAutoConsoleVariable<int32> CVarShowClusterStats(
-	TEXT("gs.ShowClusterStats"),
-	0,
-	TEXT("Show cluster culling statistics on screen.\n")
-	TEXT(" 0: Off (default)\n")
-	TEXT(" 1: On"),
-	ECVF_RenderThreadSafe);
-
 /** LOD error threshold in pixels - controls when LOD kicks in */
 TAutoConsoleVariable<float> CVarLODErrorThreshold(
 	TEXT("gs.LODErrorThreshold"),
@@ -65,7 +56,6 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
-int32 GGaussianSplatShowClusterStats = 0;
 
 // Helper to get the renderer module
 static IRendererModule& GetRendererModuleRef()

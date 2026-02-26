@@ -9,19 +9,11 @@
 
 
 
-這些debug command是什麼?
-- gs.LODErrorThreshold
-- gs.ShowClusterStats
-- gs.ShowClusterBounds 2 > 這可以拿掉了
-
-
-
-
 [SparkJS]
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 
 [LOD切換更不明顯一點]
-	- 
+	- force各LOD看細節如何
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
