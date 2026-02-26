@@ -49,5 +49,6 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - `gs.ShowClusterBounds 1`: enable Nanite cluster preview
 - `gs.ShowClusterBounds 2`: show LOD cluster in different color
 - `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
+- `gs.LODErrorThreshold ?`: adjust the threshold of screen space error (8-128)
 
 
