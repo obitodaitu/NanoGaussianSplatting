@@ -2,8 +2,7 @@
 
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatAsset.h"
-#include "PLYFileReader.h"
-#include "GaussianClusterBuilder.h"
+#include "PLYFileReader.h"  // Now in Runtime module (GaussianSplatting/Public/)
 #include "EditorFramework/AssetImportData.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
@@ -95,6 +94,9 @@ EReimportResult::Type UGaussianSplatAssetFactory::Reimport(UObject* Obj)
 		return EReimportResult::Failed;
 	}
 
+	// Preserve Nanite setting before reimport
+	const bool bWasNaniteEnabled = Asset->IsNaniteEnabled();
+
 	// Use the original quality level
 	QualityLevel = Asset->ImportQuality;
 
@@ -108,6 +110,15 @@ EReimportResult::Type UGaussianSplatAssetFactory::Reimport(UObject* Obj)
 
 	if (ReimportedAsset)
 	{
+		// If Nanite was enabled before reimport, rebuild the cluster hierarchy
+		if (bWasNaniteEnabled)
+		{
+			UE_LOG(LogTemp, Log, TEXT("Reimport: Rebuilding Nanite cluster hierarchy (was enabled before reimport)"));
+			if (!ReimportedAsset->BuildNaniteClusterHierarchy())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Reimport: Failed to rebuild Nanite cluster hierarchy"));
+			}
+		}
 		return EReimportResult::Succeeded;
 	}
 
@@ -125,7 +136,7 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	SlowTask.MakeDialog(true);
 
 	// Read PLY file
-	SlowTask.EnterProgressFrame(20.0f, FText::FromString(TEXT("Reading PLY file...")));
+	SlowTask.EnterProgressFrame(30.0f, FText::FromString(TEXT("Reading PLY file...")));
 
 	TArray<FGaussianSplatData> SplatData;
 	FString ErrorMessage;
@@ -137,54 +148,6 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file"), SplatData.Num());
-
-	// Build cluster hierarchy (this reorders splats for spatial locality)
-	SlowTask.EnterProgressFrame(20.0f, FText::FromString(TEXT("Building cluster hierarchy...")));
-
-	FGaussianClusterHierarchy ClusterHierarchy;
-	FGaussianClusterBuilder::FBuildSettings BuildSettings;
-	BuildSettings.SplatsPerCluster = 128;  // Smaller clusters for finer-grained LOD
-	BuildSettings.MaxChildrenPerCluster = 8;
-	BuildSettings.bReorderSplats = true; // Reorder for better cache locality
-
-	bool bClusteringSucceeded = FGaussianClusterBuilder::BuildClusterHierarchy(
-		SplatData, ClusterHierarchy, BuildSettings);
-
-	if (bClusteringSucceeded)
-	{
-		UE_LOG(LogTemp, Log, TEXT("Built cluster hierarchy: %d clusters, %d LOD levels, %d LOD splats"),
-			ClusterHierarchy.Clusters.Num(), ClusterHierarchy.NumLODLevels, ClusterHierarchy.LODSplats.Num());
-
-		// UNIFIED APPROACH: Append LOD splats to main splat array
-		// This ensures all splats use the same data format and GPU buffers
-		if (ClusterHierarchy.LODSplats.Num() > 0)
-		{
-			const int32 OriginalSplatCount = SplatData.Num();
-
-			// Update cluster LODSplatStartIndex to point into unified buffer
-			// (original offset + original splat count = new offset in unified buffer)
-			for (FGaussianCluster& Cluster : ClusterHierarchy.Clusters)
-			{
-				if (Cluster.LODSplatCount > 0)
-				{
-					Cluster.LODSplatStartIndex += OriginalSplatCount;
-				}
-			}
-
-			// Append LOD splats to main splat array
-			SplatData.Append(ClusterHierarchy.LODSplats);
-
-			UE_LOG(LogTemp, Log, TEXT("Unified buffer: %d original + %d LOD = %d total splats"),
-				OriginalSplatCount, ClusterHierarchy.LODSplats.Num(), SplatData.Num());
-
-			// Clear LODSplats from hierarchy (now stored in main buffer)
-			ClusterHierarchy.LODSplats.Empty();
-		}
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Failed to build cluster hierarchy, continuing without clustering"));
-	}
 
 	// Create or reuse asset
 	SlowTask.EnterProgressFrame(10.0f, FText::FromString(TEXT("Creating asset...")));
@@ -204,27 +167,19 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	// Store source file path
 	Asset->SourceFilePath = FilePath;
 
-	// Initialize asset from splat data (now includes LOD splats in unified format)
-	SlowTask.EnterProgressFrame(45.0f, FText::FromString(TEXT("Compressing splat data...")));
+	// Initialize asset from splat data (NO cluster building - user enables Nanite via Asset Actions)
+	SlowTask.EnterProgressFrame(55.0f, FText::FromString(TEXT("Compressing splat data...")));
 
 	Asset->InitializeFromSplatData(SplatData, QualityLevel);
 
-	// Store cluster hierarchy if building succeeded
-	if (bClusteringSucceeded)
-	{
-		SlowTask.EnterProgressFrame(5.0f, FText::FromString(TEXT("Storing cluster hierarchy...")));
-		Asset->ClusterHierarchy = MoveTemp(ClusterHierarchy);
-	}
-	else
-	{
-		Asset->ClusterHierarchy.Reset();
-	}
+	// NO cluster hierarchy by default - user enables Nanite via Asset Actions > Nanite
+	Asset->ClusterHierarchy.Reset();
 
 	// Mark package dirty
 	Asset->MarkPackageDirty();
 
-	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %d clusters, %lld bytes"),
-		Asset->GetSplatCount(), Asset->GetClusterCount(), Asset->GetMemoryUsage());
+	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %lld bytes (Nanite disabled by default)"),
+		Asset->GetSplatCount(), Asset->GetMemoryUsage());
 
 	return Asset;
 }

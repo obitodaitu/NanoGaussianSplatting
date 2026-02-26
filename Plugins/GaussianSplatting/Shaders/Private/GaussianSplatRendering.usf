@@ -11,6 +11,7 @@ StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 StructuredBuffer<uint> SortKeysBuffer;
 uint SplatCount;
 uint DebugMode;  // 0=off, 1=cluster colors, 2=LOD level brightness
+uint EnableNanite;  // 1=Nanite enabled, 0=disabled (non-Nanite assets render black in debug mode)
 #endif
 
 // Convert HSV to RGB (Nanite-style saturated colors)
@@ -105,21 +106,40 @@ FVertexOutput MainVS(
 	float4 color = float4(rg.x, rg.y, ba.x, ba.y);
 
 	// Debug mode: override color with cluster-based coloring (Nanite-style)
+	// Only show debug visualization for Nanite-enabled assets; non-Nanite assets render black
 	if (DebugMode == 1)
 	{
-		// Mode 1: Random cluster colors - each cluster gets a unique color
-		// Use opaque rendering for clear debug visualization (like Nanite)
-		color.rgb = HashToColor(viewData.ClusterID);
-		color.a = 1.0;  // Fully opaque for solid colors
+		if (EnableNanite == 1)
+		{
+			// Mode 1: Random cluster colors - each cluster gets a unique color
+			// Use opaque rendering for clear debug visualization (like Nanite)
+			color.rgb = HashToColor(viewData.ClusterID);
+			color.a = 1.0;  // Fully opaque for solid colors
+		}
+		else
+		{
+			// Non-Nanite asset: render black in debug mode
+			color.rgb = float3(0.0, 0.0, 0.0);
+			color.a = 1.0;
+		}
 		Output.DebugFlag = 1;  // Skip Gaussian falloff in pixel shader
 	}
 	else if (DebugMode == 2)
 	{
-		// Mode 2: LOD level brightness - dark blue = leaf (level 0), bright yellow = higher LOD
-		uint lodLevel = viewData.Padding;
-		float t = saturate(float(lodLevel) / 5.0);  // ~5 levels typical in hierarchy
-		color.rgb = lerp(float3(0.05, 0.05, 0.2), float3(1.0, 1.0, 0.3), t);
-		color.a = 1.0;  // Fully opaque
+		if (EnableNanite == 1)
+		{
+			// Mode 2: LOD level brightness - dark blue = leaf (level 0), bright yellow = higher LOD
+			uint lodLevel = viewData.Padding;
+			float t = saturate(float(lodLevel) / 5.0);  // ~5 levels typical in hierarchy
+			color.rgb = lerp(float3(0.05, 0.05, 0.2), float3(1.0, 1.0, 0.3), t);
+			color.a = 1.0;  // Fully opaque
+		}
+		else
+		{
+			// Non-Nanite asset: render black in debug mode
+			color.rgb = float3(0.0, 0.0, 0.0);
+			color.a = 1.0;
+		}
 		Output.DebugFlag = 1;  // Skip Gaussian falloff in pixel shader
 	}
 

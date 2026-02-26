@@ -23,46 +23,33 @@
 
 
 
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
 
-Currently I am building a feature which can render the gaussian splats based on the cluster.
-The idea is inspired by Unreal Engine's Nanite.
-No need to render all the gaussian splat points all the time.
-Just render the detail that required for the screen.
-
-However currently the cluster system has some issue.
-I also have some request.
-Let me explain one by one:
-1.There is a command "gs.UseCompaction". Actually it should be turn on by set it to 1 all the time. Set to 0 will crash. Need to remove this command and just make it turn on all the time.
-2.I need to type in the command "gs.UseLODRendering 1" to enable the gaussian splatting Nanite feature. This is not ideal. I want to make it more like Unreal Engine's Nanite system. We won't turn on and turn off the Nanite feature globally by using this command. I want to remove this command.
-3.I want to add a new category to the Asset Action of the Gaussian Splat Asset in content browser called "GAUSSIAN SPLAT ACTIONS". And add a Nanite checkbox just like orginal Nanite system. We can decide whether to enable Nanite feature of this asset or not by checking the checkbox.
-4.Which means, in the same level, we can have both some gaussian splat asset got Nanite enabled and some asset got Nanite disabled exist together. This will give user more flexibility. 
-5.We can use the command "gs.ShowClusterBounds 1" to enable the Nanite cluster debug view. If the Gaussian Splat Asset has Nanite enable, we should see the debug cluster in the debug view. Everything that does not Gaussian Splat Nanite enabled should be all black.
-6.For example, skylight, sky atmophere...should be all black. The Gaussian Splat Asset that does not have Nanite enabled should be black as well. Only Gaussian Splat Asset with Nanite enabled can be seen in the debug view when we enable debug view "gs.ShowClusterBounds 1".
-7.As usaul we can use the command "gs.DebugForceLODLevel" to force Gaussian Splat Asset switch to the chosen LOD level.
-8.When we disable the Nanite feature, the gausian splat asset should can still be rendered, just no Nanite cluster feature.
-9.When we first import the PLY file, it shouln't enable Nanite by default. User need to choose to enable Nanite or not by checking the Nanite checkbox.
-10.When we first import the PLY file, no need to help user build Nanite cluster. As I know the uasset with Nanite cluster built in will be larger. Only when user enable Nanite feature through the checkbox, we start help user building the Nanite cluster, just like Unreal Enegine's original Nanite design.
-11.The idea is, the plugin can support rendering gaussian splats normally with original highly quality details. If the user has performance issue, he can choose to use our Nanite system to do perfromance optimization. We won't enable Nanite by default.
-
-Can you help me write a plan here first "D:\GitHub\UEGaussianSplatting\EnableDisableNanite.txt"?
-The feature might be a bit complicated, I want to have a plan for review first before we start coding.
-Make the plan more like to do list so we can track what features done and what features still need to be add.
+Okay there is an issue.
+If I disabled asset's Nanite feature in content browser and place it inside the level, of course the Nanite feature will not be enabled.
+After we placed it into the level, in content browser, I then enabled Nanite.
+However the asset already existed inside the level will not have Nanite enabled.
+I need to drag and drop another new asset into the level to the see the Nanite enabled version.
+As the result, although we checked the Nanite checkbox in content browser, we will have 1 asset has Nanite enabled and 1 asset has Nanite disabled.
+Do you know why this happened?
+I thought the data stored in the gaussian splat asset are totally different when we enabled and disabled the Nanite feature?
+Why the same asset can has 2 different result appear in the level?
+Do you know how to fix it?
  
 
 
-Wait.
-I want to adjust the plan.
-No backward compatibility. I don't care about the old asset previously we are using. 
-
-I also have a question.
-If user import the PLY file and check the Nanite checkbox, the asset will have Nanite enabled.
-However if user change their mind and want to disable the Nanite can he just simply uncheck the checkbox to disable it?
 
 
 
+問題
+- 原本在場景中的asset > asset在content browser中轉Nanite之後，並不會開啟，需要重新drag and drop
+- 沒開啟Nanite的是黑的，但現在只有物體是黑的，這樣不太對 > 應該是整個畫面都是黑的，只有nanite開啟的是有顏色的
 
+
+
+這些debug command是什麼?
+- gs.LODErrorThreshold
+- gs.ShowClusterStats
+- gs.ShowClusterBounds 2 > 這可以拿掉了
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
@@ -171,6 +158,7 @@ However if user change their mind and want to disable the Nanite can he just sim
 	- free VRAM when gaussian splat component got deleted
 	- compute shader: not vertex shader, not pixel shader. pure computing, not related to output pixel
 	- 用渲染的pixel去決定目前渲染的粗糙程度在畫面中能不能被接受 > 有多少pixel是錯的
+	- the file size which has Nanite enabled will be 30% larger
 
 --------------------------------------------------------------------------------------------
 [Editor Module]

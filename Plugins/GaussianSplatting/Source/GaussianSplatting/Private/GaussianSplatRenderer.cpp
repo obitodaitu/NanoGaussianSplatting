@@ -20,9 +20,7 @@
 // Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
-extern TAutoConsoleVariable<int32> CVarUseLODRendering;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
-extern TAutoConsoleVariable<int32> CVarUseCompaction;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
@@ -80,20 +78,21 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedDebugMode == CurrentDebugMode &&
 		GPUResources->CachedDebugForceLODLevel == CurrentDebugForceLODLevel;
 
-	// Check if LOD rendering is enabled
+	// Check if LOD rendering should be used (per-asset Nanite flag)
 	// GPU-driven LOD rendering: no CPU readback, all processing done on GPU
-	bool bUseLODRendering = CVarUseLODRendering.GetValueOnRenderThread() != 0 && GPUResources->bHasLODSplats;
+	bool bUseLODRendering = GPUResources->bEnableNanite && GPUResources->bHasLODSplats;
 
-	// Check if splat compaction is enabled and supported
-	bool bUseCompaction = CVarUseCompaction.GetValueOnRenderThread() != 0 &&
+	// Use compaction when Nanite is enabled and cluster data is available
+	// Compaction provides significant performance gains by only processing visible splats
+	bool bUseCompaction = GPUResources->bEnableNanite &&
 		GPUResources->bSupportsCompaction &&
 		GPUResources->bHasClusterData;
 
 	if (!bCanSkipCompute)
 	{
-		// Step 0: Cluster culling (Nanite-style optimization)
+		// Step 0: Cluster culling (Nanite-style optimization) - only when Nanite enabled
 		// Also performs LOD selection and tracks unique LOD clusters
-		if (GPUResources->bHasClusterData)
+		if (GPUResources->bEnableNanite && GPUResources->bHasClusterData)
 		{
 			int32 VisibleClusters = DispatchClusterCulling(RHICmdList, View, GPUResources, LocalToWorld, bUseLODRendering);
 			// Uncomment for debug logging:
@@ -196,12 +195,18 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 
 	// Cluster visibility integration (UNIFIED APPROACH)
 	// SplatClusterIndexBuffer maps ALL splats (original + LOD) to their clusters
-	if (GPUResources->bHasClusterData && GPUResources->SplatClusterIndexBufferSRV.IsValid())
+	// Always bind the SRVs (dummy buffers are created for non-Nanite assets)
+	Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
+	Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
+	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
+	Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
+	// Compaction buffer (always bind, even if not used - shader checks UseCompaction flag)
+	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
+	Parameters.UseCompaction = 0;  // Non-compacted path
+	Parameters.VisibleSplatCount = 0;
+
+	if (GPUResources->bHasClusterData)
 	{
-		Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
-		Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
-		Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
-		Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
 		Parameters.UseClusterCulling = 1;
 		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// OriginalSplatCount = TotalSplatCount - LODSplatCount
@@ -209,11 +214,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	}
 	else
 	{
-		// No cluster data - process all splats
-		Parameters.SplatClusterIndexBuffer = nullptr;
-		Parameters.ClusterVisibilityBitmap = nullptr;
-		Parameters.LODClusterSelectedBitmap = nullptr;
-		Parameters.SelectedClusterBuffer = nullptr;
+		// No cluster data - process all splats (shader won't read from dummy buffers)
 		Parameters.UseClusterCulling = 0;
 		Parameters.UseLODRendering = 0;
 		Parameters.OriginalSplatCount = SplatCount;
@@ -504,6 +505,8 @@ void FGaussianSplatRenderer::DrawSplats(
 	VSParameters.SplatCount = SplatCount;
 	// Debug mode from console variable (Nanite-style cluster coloring)
 	VSParameters.DebugMode = static_cast<uint32>(FMath::Max(0, CVarShowClusterBounds.GetValueOnRenderThread()));
+	// Pass Nanite enabled state for debug visualization (non-Nanite assets render black in debug mode)
+	VSParameters.EnableNanite = GPUResources->bEnableNanite ? 1 : 0;
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
@@ -516,9 +519,9 @@ void FGaussianSplatRenderer::DrawSplats(
 	// Using index buffer: 6 indices per quad (2 triangles)
 	RHICmdList.SetStreamSource(0, nullptr, 0);
 
-	// Use indirect draw when cluster culling is available
+	// Use indirect draw when Nanite is enabled and cluster data is available
 	// This allows the GPU to determine how many instances to draw
-	if (GPUResources->bSupportsIndirectDraw && GPUResources->bHasClusterData)
+	if (GPUResources->bEnableNanite && GPUResources->bSupportsIndirectDraw && GPUResources->bHasClusterData)
 	{
 		// GPU-driven rendering: instance count comes from cluster culling results
 		RHICmdList.DrawIndexedPrimitiveIndirect(
@@ -529,7 +532,7 @@ void FGaussianSplatRenderer::DrawSplats(
 	}
 	else
 	{
-		// Fallback: CPU-driven rendering with fixed splat count
+		// Fallback: CPU-driven rendering with fixed splat count (non-Nanite path)
 		RHICmdList.DrawIndexedPrimitive(
 			GPUResources->IndexBuffer,
 			0,  // BaseVertexIndex

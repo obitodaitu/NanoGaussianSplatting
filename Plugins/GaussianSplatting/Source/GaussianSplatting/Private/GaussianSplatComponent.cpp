@@ -53,12 +53,14 @@ void UGaussianSplatComponent::OnRegister()
 	if (SplatAsset)
 	{
 		bBoundsCached = false;
+		SubscribeToAssetChanges();
 	}
 }
 
 void UGaussianSplatComponent::OnUnregister()
 {
 	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: OnUnregister called!"));
+	UnsubscribeFromAssetChanges();
 	Super::OnUnregister();
 }
 
@@ -116,7 +118,17 @@ void UGaussianSplatComponent::SetSplatAsset(UGaussianSplatAsset* NewAsset)
 {
 	if (SplatAsset != NewAsset)
 	{
+		// Unsubscribe from old asset
+		UnsubscribeFromAssetChanges();
+
 		SplatAsset = NewAsset;
+
+		// Subscribe to new asset
+		if (IsRegistered())
+		{
+			SubscribeToAssetChanges();
+		}
+
 		OnAssetChanged();
 	}
 }
@@ -142,5 +154,41 @@ void UGaussianSplatComponent::MarkRenderStateDirty()
 	if (IsRegistered())
 	{
 		Super::MarkRenderStateDirty();
+	}
+}
+
+void UGaussianSplatComponent::OnAssetDataChanged(UGaussianSplatAsset* ChangedAsset)
+{
+	// Only respond if this is our asset
+	if (ChangedAsset == SplatAsset)
+	{
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Asset data changed (Nanite state), recreating scene proxy"));
+
+		// Invalidate cached bounds since splat count may have changed
+		bBoundsCached = false;
+		UpdateBounds();
+
+		// Recreate the scene proxy with updated asset data
+		// This will cause CreateSceneProxy to be called again with the new Nanite state
+		MarkRenderStateDirty();
+	}
+}
+
+void UGaussianSplatComponent::SubscribeToAssetChanges()
+{
+	if (SplatAsset && !AssetChangedDelegateHandle.IsValid())
+	{
+		AssetChangedDelegateHandle = SplatAsset->OnAssetChanged.AddUObject(this, &UGaussianSplatComponent::OnAssetDataChanged);
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Subscribed to asset change notifications"));
+	}
+}
+
+void UGaussianSplatComponent::UnsubscribeFromAssetChanges()
+{
+	if (SplatAsset && AssetChangedDelegateHandle.IsValid())
+	{
+		SplatAsset->OnAssetChanged.Remove(AssetChangedDelegateHandle);
+		AssetChangedDelegateHandle.Reset();
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Unsubscribed from asset change notifications"));
 	}
 }

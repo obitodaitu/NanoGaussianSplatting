@@ -135,6 +135,9 @@ public:
 	/** Whether cluster culling is available */
 	bool bHasClusterData = false;
 
+	/** Whether Nanite is enabled for this asset (per-asset setting) */
+	bool bEnableNanite = false;
+
 	//----------------------------------------------------------------------
 	// LOD splat resources (for parent cluster rendering)
 	//----------------------------------------------------------------------

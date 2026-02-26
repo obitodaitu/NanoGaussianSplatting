@@ -39,8 +39,11 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	Asset->GetSHData(CachedSHData);
 	CachedChunkData = Asset->ChunkData;
 
-	// Cache cluster hierarchy data if available
-	if (Asset->HasClusterHierarchy())
+	// Set Nanite enabled flag from asset
+	bEnableNanite = Asset->IsNaniteEnabled();
+
+	// Cache cluster hierarchy data if Nanite is enabled and available
+	if (bEnableNanite && Asset->HasClusterHierarchy())
 	{
 		const FGaussianClusterHierarchy& Hierarchy = Asset->GetClusterHierarchy();
 		Hierarchy.ToGPUClusters(CachedClusterData);
@@ -514,8 +517,124 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 
 void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICmdList)
 {
+	// When Nanite is disabled (no cluster data), we still need to create dummy buffers
+	// because UE5's shader parameter system requires all SHADER_PARAMETER_SRV to be valid
 	if (!bHasClusterData || CachedClusterData.Num() == 0)
 	{
+		// Create minimal dummy buffers for non-Nanite assets
+		// These are 1-element buffers that satisfy the shader binding requirements
+		// The shader checks UseClusterCulling == 0 and won't actually read from them
+
+		// Dummy SplatClusterIndexBuffer (1 uint)
+		{
+			const uint32 BufferSize = sizeof(uint32);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("GaussianSplatClusterIndexBufferDummy"),
+				BufferSize,
+				sizeof(uint32),
+				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVMask);
+			SplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
+
+			uint32 Zero = 0;
+			void* Data = RHICmdList.LockBuffer(SplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
+			FMemory::Memcpy(Data, &Zero, BufferSize);
+			RHICmdList.UnlockBuffer(SplatClusterIndexBuffer);
+
+			SplatClusterIndexBufferSRV = RHICmdList.CreateShaderResourceView(
+				SplatClusterIndexBuffer, FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride(sizeof(uint32)));
+		}
+
+		// Dummy ClusterVisibilityBitmap (1 uint)
+		{
+			const uint32 BufferSize = sizeof(uint32);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("GaussianClusterVisibilityBitmapDummy"),
+				BufferSize,
+				sizeof(uint32),
+				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVMask);
+			ClusterVisibilityBitmap = RHICmdList.CreateBuffer(Desc);
+
+			uint32 Zero = 0;
+			void* Data = RHICmdList.LockBuffer(ClusterVisibilityBitmap, 0, BufferSize, RLM_WriteOnly);
+			FMemory::Memcpy(Data, &Zero, BufferSize);
+			RHICmdList.UnlockBuffer(ClusterVisibilityBitmap);
+
+			ClusterVisibilityBitmapSRV = RHICmdList.CreateShaderResourceView(
+				ClusterVisibilityBitmap, FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride(sizeof(uint32)));
+		}
+
+		// Dummy LODClusterSelectedBitmap (1 uint)
+		{
+			const uint32 BufferSize = sizeof(uint32);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("GaussianLODClusterSelectedBitmapDummy"),
+				BufferSize,
+				sizeof(uint32),
+				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVMask);
+			LODClusterSelectedBitmap = RHICmdList.CreateBuffer(Desc);
+
+			uint32 Zero = 0;
+			void* Data = RHICmdList.LockBuffer(LODClusterSelectedBitmap, 0, BufferSize, RLM_WriteOnly);
+			FMemory::Memcpy(Data, &Zero, BufferSize);
+			RHICmdList.UnlockBuffer(LODClusterSelectedBitmap);
+
+			LODClusterSelectedBitmapSRV = RHICmdList.CreateShaderResourceView(
+				LODClusterSelectedBitmap, FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride(sizeof(uint32)));
+		}
+
+		// Dummy SelectedClusterBuffer (1 uint)
+		{
+			const uint32 BufferSize = sizeof(uint32);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("GaussianSelectedClusterBufferDummy"),
+				BufferSize,
+				sizeof(uint32),
+				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVMask);
+			SelectedClusterBuffer = RHICmdList.CreateBuffer(Desc);
+
+			uint32 Zero = 0;
+			void* Data = RHICmdList.LockBuffer(SelectedClusterBuffer, 0, BufferSize, RLM_WriteOnly);
+			FMemory::Memcpy(Data, &Zero, BufferSize);
+			RHICmdList.UnlockBuffer(SelectedClusterBuffer);
+
+			SelectedClusterBufferSRV = RHICmdList.CreateShaderResourceView(
+				SelectedClusterBuffer, FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride(sizeof(uint32)));
+		}
+
+		// Dummy CompactedSplatIndicesBuffer (1 uint) - needed even when UseCompaction=0
+		{
+			const uint32 BufferSize = sizeof(uint32);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("GaussianCompactedSplatIndicesBufferDummy"),
+				BufferSize,
+				sizeof(uint32),
+				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVMask);
+			CompactedSplatIndicesBuffer = RHICmdList.CreateBuffer(Desc);
+
+			uint32 Zero = 0;
+			void* Data = RHICmdList.LockBuffer(CompactedSplatIndicesBuffer, 0, BufferSize, RLM_WriteOnly);
+			FMemory::Memcpy(Data, &Zero, BufferSize);
+			RHICmdList.UnlockBuffer(CompactedSplatIndicesBuffer);
+
+			CompactedSplatIndicesBufferSRV = RHICmdList.CreateShaderResourceView(
+				CompactedSplatIndicesBuffer, FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride(sizeof(uint32)));
+		}
+
 		return;
 	}
 

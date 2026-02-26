@@ -9,9 +9,15 @@
 #include "GaussianClusterTypes.h"
 #include "GaussianSplatAsset.generated.h"
 
+// Forward declaration
+class UGaussianSplatAsset;
+
+// Delegate fired when asset data changes (e.g., Nanite enabled/disabled)
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplatAsset*);
+
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
-#define GAUSSIAN_SPLAT_ASSET_VERSION 3
+#define GAUSSIAN_SPLAT_ASSET_VERSION 4  // Added bEnableNanite, OriginalSplatCount
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -53,6 +59,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
 	bool HasClusterHierarchy() const { return ClusterHierarchy.IsValid(); }
 
+	/** Check if Nanite is enabled for this asset */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	bool IsNaniteEnabled() const { return bEnableNanite; }
+
+#if WITH_EDITOR
+	/**
+	 * Build Nanite cluster hierarchy from source PLY file
+	 * This re-reads the source file and builds cluster data
+	 * @return True if successful, false if source file not found or build failed
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	bool BuildNaniteClusterHierarchy();
+
+	/**
+	 * Clear Nanite cluster hierarchy to reduce asset size
+	 * Removes cluster data and LOD splats
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	void ClearNaniteClusterHierarchy();
+
+	/**
+	 * Set Nanite enabled state (internal use)
+	 */
+	void SetNaniteEnabled(bool bEnable) { bEnableNanite = bEnable; }
+#endif
+
 	/** Get number of clusters in hierarchy */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
 	int32 GetClusterCount() const { return ClusterHierarchy.Clusters.Num(); }
@@ -61,8 +93,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
 	int32 GetNumLODLevels() const { return ClusterHierarchy.NumLODLevels; }
 
+	/** Get original splat count (excluding LOD splats) */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	int32 GetOriginalSplatCount() const { return OriginalSplatCount > 0 ? OriginalSplatCount : SplatCount; }
+
 	/** Get the cluster hierarchy (const reference) */
 	const FGaussianClusterHierarchy& GetClusterHierarchy() const { return ClusterHierarchy; }
+
+	/** Delegate fired when asset data changes (Nanite enabled/disabled, reimport, etc.) */
+	FOnGaussianSplatAssetChanged OnAssetChanged;
 
 public:
 	/** Total number of splats */
@@ -126,11 +165,25 @@ public:
 	EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
 
 	/**
+	 * Whether Nanite-style LOD and culling is enabled for this asset
+	 * Enable via Asset Actions > Nanite in Content Browser
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "Nanite")
+	bool bEnableNanite = false;
+
+	/**
 	 * Hierarchical cluster structure for Nanite-style LOD and culling
-	 * Built during import, used at runtime for efficient rendering
+	 * Only populated when bEnableNanite is true
 	 */
 	UPROPERTY()
 	FGaussianClusterHierarchy ClusterHierarchy;
+
+	/**
+	 * Number of original splats (before LOD splats are appended)
+	 * When Nanite is enabled, SplatCount includes both original + LOD splats
+	 */
+	UPROPERTY()
+	int32 OriginalSplatCount = 0;
 
 public:
 	/**

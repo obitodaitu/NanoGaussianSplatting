@@ -3,6 +3,12 @@
 #include "GaussianSplatAsset.h"
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
+#include "GaussianClusterBuilder.h"
+#include "PLYFileReader.h"
+
+#if WITH_EDITOR
+#include "Misc/ScopedSlowTask.h"
+#endif
 
 UGaussianSplatAsset::UGaussianSplatAsset()
 {
@@ -41,6 +47,9 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	SHBulkData.Serialize(Ar, this);
 	ColorTextureBulkData.Serialize(Ar, this);
 
+	// Nanite-related fields (Version 4+)
+	Ar << bEnableNanite;
+	Ar << OriginalSplatCount;
 	Ar << ClusterHierarchy;
 }
 
@@ -529,3 +538,160 @@ void UGaussianSplatAsset::GetColorTextureData(TArray<uint8>& OutData) const
 		OutData.Empty();
 	}
 }
+
+#if WITH_EDITOR
+bool UGaussianSplatAsset::BuildNaniteClusterHierarchy()
+{
+	// Check if source file exists
+	if (SourceFilePath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error, TEXT("BuildNaniteClusterHierarchy: Source file path is empty"));
+		return false;
+	}
+
+	if (!FPaths::FileExists(SourceFilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("BuildNaniteClusterHierarchy: Source file not found: %s"), *SourceFilePath);
+		return false;
+	}
+
+	FScopedSlowTask SlowTask(100.0f, FText::FromString(TEXT("Building Nanite Cluster Hierarchy...")));
+	SlowTask.MakeDialog(true);
+
+	// Step 1: Re-read PLY file
+	SlowTask.EnterProgressFrame(30.0f, FText::FromString(TEXT("Reading PLY file...")));
+
+	TArray<FGaussianSplatData> SplatData;
+	FString ErrorMessage;
+
+	if (!FPLYFileReader::ReadPLYFile(SourceFilePath, SplatData, ErrorMessage))
+	{
+		UE_LOG(LogTemp, Error, TEXT("BuildNaniteClusterHierarchy: Failed to read PLY file: %s"), *ErrorMessage);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("BuildNaniteClusterHierarchy: Read %d splats from PLY file"), SplatData.Num());
+
+	// Store original splat count before LOD splats are appended
+	OriginalSplatCount = SplatData.Num();
+
+	// Step 2: Build cluster hierarchy
+	SlowTask.EnterProgressFrame(50.0f, FText::FromString(TEXT("Building cluster hierarchy...")));
+
+	FGaussianClusterHierarchy NewClusterHierarchy;
+	FGaussianClusterBuilder::FBuildSettings BuildSettings;
+	BuildSettings.SplatsPerCluster = 128;
+	BuildSettings.MaxChildrenPerCluster = 8;
+	BuildSettings.bReorderSplats = true;
+	BuildSettings.bGenerateLOD = true;
+
+	bool bClusteringSucceeded = FGaussianClusterBuilder::BuildClusterHierarchy(
+		SplatData, NewClusterHierarchy, BuildSettings);
+
+	if (!bClusteringSucceeded)
+	{
+		UE_LOG(LogTemp, Error, TEXT("BuildNaniteClusterHierarchy: Failed to build cluster hierarchy"));
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("BuildNaniteClusterHierarchy: Built %d clusters, %d LOD levels, %d LOD splats"),
+		NewClusterHierarchy.Clusters.Num(), NewClusterHierarchy.NumLODLevels, NewClusterHierarchy.LODSplats.Num());
+
+	// Step 3: Append LOD splats to main buffer (unified approach)
+	SlowTask.EnterProgressFrame(15.0f, FText::FromString(TEXT("Appending LOD splats...")));
+
+	if (NewClusterHierarchy.LODSplats.Num() > 0)
+	{
+		// Update cluster LODSplatStartIndex to point into unified buffer
+		for (FGaussianCluster& Cluster : NewClusterHierarchy.Clusters)
+		{
+			if (Cluster.LODSplatCount > 0)
+			{
+				Cluster.LODSplatStartIndex += OriginalSplatCount;
+			}
+		}
+
+		// Append LOD splats to main splat array
+		SplatData.Append(NewClusterHierarchy.LODSplats);
+
+		UE_LOG(LogTemp, Log, TEXT("BuildNaniteClusterHierarchy: Unified buffer: %d original + %d LOD = %d total splats"),
+			OriginalSplatCount, NewClusterHierarchy.LODSplats.Num(), SplatData.Num());
+
+		// Clear LODSplats from hierarchy (now stored in main buffer)
+		NewClusterHierarchy.LODSplats.Empty();
+	}
+
+	// Step 4: Reinitialize asset with new splat data (includes LOD splats)
+	SlowTask.EnterProgressFrame(5.0f, FText::FromString(TEXT("Updating asset data...")));
+
+	// Store the cluster hierarchy
+	ClusterHierarchy = MoveTemp(NewClusterHierarchy);
+
+	// Reinitialize from the new splat data (now includes LOD splats)
+	InitializeFromSplatData(SplatData, ImportQuality);
+
+	// Enable Nanite
+	bEnableNanite = true;
+
+	// Mark package dirty
+	MarkPackageDirty();
+
+	UE_LOG(LogTemp, Log, TEXT("BuildNaniteClusterHierarchy: Successfully built Nanite hierarchy. Total splats: %d, Clusters: %d"),
+		SplatCount, ClusterHierarchy.Clusters.Num());
+
+	// Notify listeners (components) that asset has changed so they can recreate their scene proxies
+	OnAssetChanged.Broadcast(this);
+
+	return true;
+}
+
+void UGaussianSplatAsset::ClearNaniteClusterHierarchy()
+{
+	if (!bEnableNanite && !ClusterHierarchy.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ClearNaniteClusterHierarchy: Nanite is not enabled"));
+		return;
+	}
+
+	// If we have LOD splats appended, we need to re-read the original data
+	if (OriginalSplatCount > 0 && OriginalSplatCount < SplatCount)
+	{
+		// Re-read the original PLY file to get clean splat data without LOD splats
+		if (!SourceFilePath.IsEmpty() && FPaths::FileExists(SourceFilePath))
+		{
+			TArray<FGaussianSplatData> SplatData;
+			FString ErrorMessage;
+
+			if (FPLYFileReader::ReadPLYFile(SourceFilePath, SplatData, ErrorMessage))
+			{
+				// Reinitialize with original splats only (no LOD)
+				InitializeFromSplatData(SplatData, ImportQuality);
+				UE_LOG(LogTemp, Log, TEXT("ClearNaniteClusterHierarchy: Restored %d original splats"), SplatData.Num());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ClearNaniteClusterHierarchy: Could not re-read source file, keeping current splat data"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ClearNaniteClusterHierarchy: Source file not found, keeping current splat data (includes LOD splats)"));
+		}
+	}
+
+	// Clear cluster hierarchy
+	ClusterHierarchy.Reset();
+
+	// Reset counters
+	OriginalSplatCount = 0;
+	bEnableNanite = false;
+
+	// Mark package dirty
+	MarkPackageDirty();
+
+	UE_LOG(LogTemp, Log, TEXT("ClearNaniteClusterHierarchy: Cleared Nanite hierarchy"));
+
+	// Notify listeners (components) that asset has changed so they can recreate their scene proxies
+	OnAssetChanged.Broadcast(this);
+}
+#endif

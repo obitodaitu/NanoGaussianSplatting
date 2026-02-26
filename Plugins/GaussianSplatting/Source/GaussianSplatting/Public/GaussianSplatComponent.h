@@ -84,8 +84,20 @@ protected:
 	/** Mark the render state as dirty */
 	void MarkRenderStateDirty();
 
+	/** Called when the asset's data changes (e.g., Nanite enabled/disabled) */
+	void OnAssetDataChanged(class UGaussianSplatAsset* ChangedAsset);
+
+	/** Subscribe to asset change notifications */
+	void SubscribeToAssetChanges();
+
+	/** Unsubscribe from asset change notifications */
+	void UnsubscribeFromAssetChanges();
+
 private:
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
 	mutable bool bBoundsCached = false;
+
+	/** Delegate handle for asset change subscription */
+	FDelegateHandle AssetChangedDelegateHandle;
 };

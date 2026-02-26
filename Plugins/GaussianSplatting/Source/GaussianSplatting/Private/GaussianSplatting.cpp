@@ -51,38 +51,17 @@ TAutoConsoleVariable<float> CVarLODErrorThreshold(
 	TEXT("Default: 32.0"),
 	ECVF_RenderThreadSafe);
 
-/** Enable LOD rendering for Gaussian Splats */
-TAutoConsoleVariable<int32> CVarUseLODRendering(
-	TEXT("gs.UseLODRendering"),
-	0,
-	TEXT("[WIP - Not yet functional] Enable LOD rendering for Gaussian Splats.\n")
-	TEXT("When enabled, distant clusters render simplified LOD splats instead of all original splats.\n")
-	TEXT(" 0: Off - always render original splats (default)\n")
-	TEXT(" 1: On - use LOD splats for distant clusters (requires GPU-driven implementation)"),
-	ECVF_RenderThreadSafe);
-
 /** Debug: Force a specific LOD level for debugging LOD hierarchy */
 TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("gs.DebugForceLODLevel"),
 	-1,
-	TEXT("Force rendering of a specific LOD level for debugging.\n")
+	TEXT("Force rendering of a specific LOD level for debugging (only affects Nanite-enabled assets).\n")
 	TEXT("This ignores normal LOD selection and forces all clusters to use specified level.\n")
 	TEXT(" -1: Auto - normal LOD selection based on distance/error (default)\n")
 	TEXT("  0: Force leaf clusters only - render original splats (finest detail)\n")
 	TEXT("  1+: Force specific LOD level (1 = first parent level, 2 = second, etc.)\n")
 	TEXT("Note: Higher levels have fewer, coarser splats. Max level depends on asset size.\n")
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
-	ECVF_RenderThreadSafe);
-
-/** Enable splat compaction for GPU-driven work reduction */
-TAutoConsoleVariable<int32> CVarUseCompaction(
-	TEXT("gs.UseCompaction"),
-	1,
-	TEXT("Enable splat compaction for GPU-driven work reduction.\n")
-	TEXT("When enabled, only visible splats are processed in CalcViewData, CalcDistances, and Sort.\n")
-	TEXT("This provides significant performance improvement especially when camera is far from assets.\n")
-	TEXT(" 0: Off - process all splats (original behavior)\n")
-	TEXT(" 1: On - compact visible splats first, then process only those (default)"),
 	ECVF_RenderThreadSafe);
 
 // Export for other modules
