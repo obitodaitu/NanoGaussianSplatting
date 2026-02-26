@@ -1,0 +1,255 @@
+# Gaussian Splatting Nanite Feature - Per-Asset Enable/Disable Implementation Plan
+
+## Overview
+Transform the current global LOD/Nanite system into a per-asset toggle system, similar to Unreal Engine's native Nanite implementation. Users can enable/disable Nanite for each Gaussian Splat asset individually via the Content Browser's Asset Actions menu.
+
+## Current State Analysis
+- `gs.UseCompaction` - Global console variable, always ON (setting to 0 crashes)
+- `gs.UseLODRendering` - Global console variable to enable/disable LOD rendering
+- Cluster hierarchy built during PLY import for ALL assets
+- No per-asset Nanite control
+- Debug view (`gs.ShowClusterBounds`) shows all assets with cluster data
+
+## Target State
+- Compaction always enabled internally (remove console variable)
+- Remove global `gs.UseLODRendering` command
+- Per-asset `bEnableNanite` property stored in UGaussianSplatAsset
+- Nanite toggle via Asset Actions submenu in Content Browser
+- Cluster hierarchy only built when user enables Nanite
+- Debug view only shows Nanite-enabled assets
+- Mixed rendering: Nanite and non-Nanite assets coexist
+
+## Enable/Disable Nanite Workflow
+
+### User Enables Nanite (checks checkbox):
+1. System reads source PLY file using stored `SourceFilePath`
+2. Builds cluster hierarchy from splat data
+3. Generates LOD splats and appends to main buffer
+4. Sets `bEnableNanite = true`
+5. Asset size INCREASES (cluster + LOD data added)
+6. User saves asset to persist changes
+
+### User Disables Nanite (unchecks checkbox):
+1. Clears cluster hierarchy data
+2. Removes appended LOD splats from buffer
+3. Sets `bEnableNanite = false`
+4. Asset size DECREASES (back to base splat data)
+5. User saves asset to persist changes
+
+### User Re-enables Nanite Later:
+- Simply check checkbox again → rebuilds from source PLY file
+- Fully reversible, can toggle as many times as needed
+
+### Source File Missing:
+- If source PLY file not found when enabling Nanite:
+  - Show error dialog: "Source file not found. Please locate the PLY file."
+  - Optionally allow user to browse for new source file location
+
+---
+
+## Implementation Tasks
+
+### Phase 1: Asset Property & Storage
+- [ ] 1.1. Add `bEnableNanite` property to UGaussianSplatAsset
+  - File: `GaussianSplatAsset.h`
+  - Add UPROPERTY: `bool bEnableNanite = false`
+  - Make it non-editable in Details panel (controlled via Asset Actions)
+
+- [ ] 1.2. Update serialization to handle `bEnableNanite`
+  - File: `GaussianSplatAsset.cpp`
+  - Serialize `bEnableNanite` flag
+  - Update GAUSSIAN_SPLAT_ASSET_VERSION
+
+- [ ] 1.3. Add method to build Nanite cluster hierarchy on-demand
+  - File: `GaussianSplatAsset.h/.cpp`
+  - Add: `bool BuildNaniteClusterHierarchy()` - re-reads source PLY file, builds clusters, appends LOD splats
+  - Add: `void ClearNaniteClusterHierarchy()` - removes cluster data and LOD splats, shrinks asset
+  - Uses existing `SourceFilePath` to re-read PLY data
+  - Returns false if source file not found (show error to user)
+
+- [ ] 1.4. Modify import to NOT build cluster hierarchy by default
+  - File: `GaussianSplatAssetFactory.cpp`
+  - Remove automatic cluster building in `ImportPLYFile()`
+  - Remove LOD splat appending to main buffer
+  - Asset remains as simple splat data until user enables Nanite
+
+### Phase 2: Asset Actions UI
+- [ ] 2.1. Add "GAUSSIAN SPLAT ACTIONS" category to Asset Actions menu
+  - File: `GaussianSplatAssetTypeActions.cpp`
+  - Create new section using `Section.AddSubMenu()` or custom section
+  - Match Unreal's native Nanite menu style
+
+- [ ] 2.2. Add "Nanite" submenu with checkbox toggle
+  - File: `GaussianSplatAssetTypeActions.h/.cpp`
+  - Add submenu entry showing current Nanite status
+  - Checkbox checked = Nanite enabled
+  - Display "Enable Nanite" or "Disable Nanite" text based on state
+
+- [ ] 2.3. Implement Enable Nanite action
+  - When user checks Nanite checkbox:
+    - Set `bEnableNanite = true`
+    - Call `BuildNaniteClusterHierarchy()` to build cluster data
+    - Mark asset dirty (needs save)
+    - Show progress dialog for large assets
+
+- [ ] 2.4. Implement Disable Nanite action
+  - When user unchecks Nanite checkbox:
+    - Set `bEnableNanite = false`
+    - Call `ClearNaniteClusterHierarchy()` to remove cluster data
+    - Mark asset dirty (saves disk space)
+
+- [ ] 2.5. Handle multi-select scenarios
+  - Support enabling/disabling Nanite for multiple selected assets
+  - Show appropriate status (mixed state, all on, all off)
+
+- [ ] 2.6. Handle missing source file when enabling Nanite
+  - Check if `SourceFilePath` exists before building
+  - If missing: Show error dialog with option to locate file
+  - Update `SourceFilePath` if user provides new location
+
+### Phase 3: Rendering Pipeline Updates
+- [ ] 3.1. Remove `gs.UseCompaction` console variable
+  - File: `GaussianSplatting.cpp`
+  - Remove CVarUseCompaction declaration
+  - Remove extern declaration in `GaussianSplatRenderer.cpp`
+  - Always use compaction internally
+
+- [ ] 3.2. Remove `gs.UseLODRendering` console variable
+  - File: `GaussianSplatting.cpp`
+  - Remove CVarUseLODRendering declaration
+  - Remove extern declaration in `GaussianSplatRenderer.cpp`
+
+- [ ] 3.3. Update FGaussianSplatGPUResources to respect per-asset Nanite flag
+  - File: `GaussianSplatSceneProxy.cpp`
+  - Pass `bEnableNanite` from asset to GPU resources
+  - Only create cluster buffers if `bEnableNanite == true`
+  - If Nanite disabled: `bHasClusterData = false`, `bHasLODSplats = false`
+
+- [ ] 3.4. Update FGaussianSplatRenderer::Render() for per-asset Nanite
+  - File: `GaussianSplatRenderer.cpp`
+  - Replace `CVarUseLODRendering` check with `GPUResources->bEnableNanite`
+  - Replace `CVarUseCompaction` check - always use compaction when cluster data exists
+  - Non-Nanite assets: Skip cluster culling, use simple draw path
+
+- [ ] 3.5. Define rendering paths clearly
+  - Nanite ENABLED: ClusterCulling -> CompactSplats -> CalcViewData(indirect) -> Sort -> DrawSplats(indirect)
+  - Nanite DISABLED: CalcViewData(all) -> CalcDistances -> Sort -> DrawSplats(fixed count)
+
+### Phase 4: Debug View Updates
+- [ ] 4.1. Update `gs.ShowClusterBounds` debug view
+  - File: `GaussianSplatRenderer.cpp` / shaders
+  - Only show cluster visualization for Nanite-enabled assets
+  - Non-Nanite assets render as black/invisible in debug mode
+
+- [ ] 4.2. Pass Nanite flag to shaders
+  - File: `GaussianSplatShaders.h/.cpp`, `DrawSplat.usf`
+  - Add `uint bEnableNanite` uniform
+  - If DebugMode > 0 and bEnableNanite == 0: output black
+
+- [ ] 4.3. Ensure scene elements without Nanite appear black
+  - Non-Gaussian Splat objects (skylight, atmosphere, meshes): Not affected (different render path)
+  - Gaussian Splat without Nanite: Render black in debug mode
+  - Only Nanite-enabled Gaussian Splats show cluster colors
+
+### Phase 5: Keep Working Console Variables
+- [ ] 5.1. Keep `gs.ShowClusterBounds` - works per-asset
+- [ ] 5.2. Keep `gs.DebugForceLODLevel` - only affects Nanite-enabled assets
+- [ ] 5.3. Keep `gs.LODErrorThreshold` - only affects Nanite-enabled assets
+- [ ] 5.4. Keep `gs.ShowClusterStats` - shows stats only for Nanite-enabled assets
+
+### Phase 6: Reimport Handling
+- [ ] 6.1. Update reimport to preserve Nanite setting
+  - File: `GaussianSplatAssetFactory.cpp`
+  - Save `bEnableNanite` before reimport
+  - Restore and rebuild clusters if was enabled
+
+- [ ] 6.2. Handle source file path for cluster rebuilding
+  - Store decompressed splat data in asset OR
+  - Re-read from source PLY file when building clusters
+  - Prefer re-reading to keep asset size smaller
+
+---
+
+## File Changes Summary
+
+### Files to Modify:
+1. `GaussianSplatAsset.h` - Add bEnableNanite, BuildNaniteClusterHierarchy(), ClearNaniteClusterHierarchy()
+2. `GaussianSplatAsset.cpp` - Implement new methods, update serialization
+3. `GaussianSplatAssetFactory.cpp` - Remove auto cluster building, handle reimport
+4. `GaussianSplatAssetTypeActions.h` - Add Nanite action methods
+5. `GaussianSplatAssetTypeActions.cpp` - Implement Nanite menu and actions
+6. `GaussianSplatting.cpp` - Remove CVarUseCompaction, CVarUseLODRendering
+7. `GaussianSplatSceneProxy.cpp` - Pass bEnableNanite to GPU resources
+8. `GaussianSplatRenderer.cpp` - Use per-asset flag instead of global CVars
+9. `GaussianSplatShaders.h/.cpp` - Add bEnableNanite uniform
+10. `DrawSplat.usf` (vertex shader) - Handle debug mode for non-Nanite assets
+
+### New Methods to Add:
+- UGaussianSplatAsset::BuildNaniteClusterHierarchy()
+- UGaussianSplatAsset::ClearNaniteClusterHierarchy()
+- FAssetTypeActions_GaussianSplatAsset::ExecuteEnableNanite()
+- FAssetTypeActions_GaussianSplatAsset::ExecuteDisableNanite()
+- FAssetTypeActions_GaussianSplatAsset::CanEnableNanite()
+- FAssetTypeActions_GaussianSplatAsset::IsNaniteEnabled()
+
+---
+
+## Testing Checklist
+
+### Import Tests:
+- [ ] Import PLY file - should NOT have Nanite enabled by default
+- [ ] Asset size should be smaller without cluster data
+- [ ] Asset should render normally without Nanite
+
+### Enable/Disable Tests:
+- [ ] Enable Nanite via Asset Actions - clusters should build
+- [ ] Disable Nanite via Asset Actions - clusters should be removed
+- [ ] Re-enable Nanite after disabling - should rebuild successfully
+- [ ] Save asset after toggle - file size should change appropriately
+- [ ] Multi-select enable/disable should work
+- [ ] Enable Nanite with missing source file - should show error dialog
+
+### Rendering Tests:
+- [ ] Non-Nanite asset renders correctly (all splats visible)
+- [ ] Nanite asset renders correctly with LOD system
+- [ ] Mixed scene: both Nanite and non-Nanite assets render together
+- [ ] Camera close to assets: both types render correctly
+- [ ] Camera far from assets: Nanite uses LOD, non-Nanite shows all
+
+### Debug View Tests:
+- [ ] `gs.ShowClusterBounds 1` - Only Nanite assets show cluster colors
+- [ ] `gs.ShowClusterBounds 1` - Non-Nanite assets appear black
+- [ ] `gs.ShowClusterBounds 1` - Sky, atmosphere remain black
+- [ ] `gs.DebugForceLODLevel N` - Only affects Nanite assets
+
+### Console Variable Tests:
+- [ ] Removed: `gs.UseCompaction` - command should not exist
+- [ ] Removed: `gs.UseLODRendering` - command should not exist
+- [ ] Working: `gs.ShowClusterBounds`, `gs.DebugForceLODLevel`, `gs.LODErrorThreshold`
+
+### Reimport Tests:
+- [ ] Reimport Nanite-enabled asset - should rebuild clusters
+- [ ] Reimport non-Nanite asset - should stay without clusters
+
+---
+
+## Notes
+
+### Asset Size Impact:
+- Without Nanite: Only base splat data (Position, Rotation, Scale, Color, SH)
+- With Nanite: Base data + ClusterHierarchy + LOD splats (appended to main buffer)
+- Expected size increase with Nanite: ~20-40% depending on LOD settings
+
+### Performance Considerations:
+- Building cluster hierarchy is CPU-intensive (few seconds for 1M+ splats)
+- Show progress dialog during cluster building
+- Consider async building for better UX
+
+### Backward Compatibility:
+- NOT REQUIRED - Old assets can be discarded and reimported
+- No migration logic needed for existing assets
+
+### Future Considerations:
+- Auto-enable Nanite based on splat count threshold?
+- Per-instance Nanite override on components?
+- Nanite quality presets (cluster size, LOD aggressiveness)?

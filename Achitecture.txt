@@ -4,42 +4,61 @@
 ***SH function目前是失敗的
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
-
-*邊緣有點糊糊的，看能不能改善 > 應該是merge的做法要再優化，會出現超大的點 > force每一層LOD去檢視細節 > 主要是edge會特別明顯
-*目前cluster的切換有點太明顯了
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小
+***LOD切換看能不能再更不明顯一點
+***整理筆記
 **************************************************************************************************
-[Render]
-	- render preview沒問題但 render result有問題，為什麼?
-
-Nice! The issue got fixed.
-
-Let's move on to another issue.
-
-I tired render the gaussian splat asset with movie render queue.
-However there is an issue.
-If I use Movie Render Queue to render png images, the gaussian splat asset area will be clipped out and it's alpha.
-Maybe because gaussian splat has opacity value?
-If I render with JPG then it's fine.
-Do you know why and how to fix it?
-
-
-
-
-
 
 [Nanite的打開與關閉]
 *試試看default就渲染Nanite > 只是應該要從asset確定是否要讓這個asset開啟Nanite > 就跟一般的Nanite一樣
-- 順暢地打開跟關閉很重要，畢竟這不是必要的功能
-- nanite debug mode應該要能看出差別
-- command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
-- disable nanite會沒辦法渲染
-- gs.UseCompaction > 這應該不需要留著，我們會一直使用compact mode才對
-- 轉成Nanite的PLY points有辦法回復嗎?
+*先plan討論，不要直接開始寫。就是開一個規格書
+	- gs.UseCompaction > 這應該不需要留著，我們會一直使用compact mode才對 > 先查一下這個具體在幹嘛 > 這個先拿掉，畢竟應該是不管怎麼樣都要開啟才對
+	- 順暢地打開跟關閉很重要，畢竟這不是必要的功能
+	- nanite debug mode應該要能看到開啟跟關閉
+	- command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
+	- 轉成Nanite的PLY points有辦法回復嗎?
+	*- 要先打這一串command "gs.UseLODRendering 1" 才能開啟LOD render > 但這是全局開啟，我只想開啟部分asset而已
+	*- 在asset action加一個新的category叫Gaussian Splat
+	- Nanite的debug顯示要正確 	
 
 
 
+This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting PLY file inside Unreal Engine.
 
+Currently I am building a feature which can render the gaussian splats based on the cluster.
+The idea is inspired by Unreal Engine's Nanite.
+No need to render all the gaussian splat points all the time.
+Just render the detail that required for the screen.
+
+However currently the cluster system has some issue.
+I also have some request.
+Let me explain one by one:
+1.There is a command "gs.UseCompaction". Actually it should be turn on by set it to 1 all the time. Set to 0 will crash. Need to remove this command and just make it turn on all the time.
+2.I need to type in the command "gs.UseLODRendering 1" to enable the gaussian splatting Nanite feature. This is not ideal. I want to make it more like Unreal Engine's Nanite system. We won't turn on and turn off the Nanite feature globally by using this command. I want to remove this command.
+3.I want to add a new category to the Asset Action of the Gaussian Splat Asset in content browser called "GAUSSIAN SPLAT ACTIONS". And add a Nanite checkbox just like orginal Nanite system. We can decide whether to enable Nanite feature of this asset or not by checking the checkbox.
+4.Which means, in the same level, we can have both some gaussian splat asset got Nanite enabled and some asset got Nanite disabled exist together. This will give user more flexibility. 
+5.We can use the command "gs.ShowClusterBounds 1" to enable the Nanite cluster debug view. If the Gaussian Splat Asset has Nanite enable, we should see the debug cluster in the debug view. Everything that does not Gaussian Splat Nanite enabled should be all black.
+6.For example, skylight, sky atmophere...should be all black. The Gaussian Splat Asset that does not have Nanite enabled should be black as well. Only Gaussian Splat Asset with Nanite enabled can be seen in the debug view when we enable debug view "gs.ShowClusterBounds 1".
+7.As usaul we can use the command "gs.DebugForceLODLevel" to force Gaussian Splat Asset switch to the chosen LOD level.
+8.When we disable the Nanite feature, the gausian splat asset should can still be rendered, just no Nanite cluster feature.
+9.When we first import the PLY file, it shouln't enable Nanite by default. User need to choose to enable Nanite or not by checking the Nanite checkbox.
+10.When we first import the PLY file, no need to help user build Nanite cluster. As I know the uasset with Nanite cluster built in will be larger. Only when user enable Nanite feature through the checkbox, we start help user building the Nanite cluster, just like Unreal Enegine's original Nanite design.
+11.The idea is, the plugin can support rendering gaussian splats normally with original highly quality details. If the user has performance issue, he can choose to use our Nanite system to do perfromance optimization. We won't enable Nanite by default.
+
+Can you help me write a plan here first "D:\GitHub\UEGaussianSplatting\EnableDisableNanite.txt"?
+The feature might be a bit complicated, I want to have a plan for review first before we start coding.
+Make the plan more like to do list so we can track what features done and what features still need to be add.
+ 
+
+
+Wait.
+I want to adjust the plan.
+No backward compatibility. I don't care about the old asset previously we are using. 
+
+I also have a question.
+If user import the PLY file and check the Nanite checkbox, the asset will have Nanite enabled.
+However if user change their mind and want to disable the Nanite can he just simply uncheck the checkbox to disable it?
 
 
 
@@ -91,64 +110,6 @@ Do you know why and how to fix it?
 
 -----------------------------------------------------------------------------------------
 
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
-
-Currently I am building a feature which can render the gaussian splats based on the cluster.
-The idea is inspired by Unreal Engine's Nanite.
-No need to render all the gaussian splat points all the time.
-Just render the details required for the screen.
-
-However currently the cluster system has some issue.
-When I enable the cluster feature through the command "gs.UseLODRendering 1", some points are at wrong position, wrong scale, wrong color.
-If I disable the cluster feature through the command "gs.UseLODRendering 0", all the points looks correct which mean the lowest LOD/leaf cluster works fine.
-
-Can you help me add a debug feature which will force render a specific LOD only?
-I want to check if a specific LOD is rendering correctly or not.
-Because our LOD system will build bottom up, I guess how many LOD we will have will vary depends on the point counts of the asset right?
-As I know the leaf cluster will have 128 points.
-For example the asset has more points will eventually has more LOD as we build bottom up from 128 points right?
-Any suggestion on how to add this LOD debug feature?
-
-
-
-
-
-
-
-
-
-[Questions]
-	- 目前cluster顯示是錯的是為什麼?
-	- Nanite具體在做什麼? 再比對一次
-	- 目前debug cluster跟實際的Nanite渲染是分開的，這樣對嗎? 這樣cluster的意義是什麼?
-	- 聽起來LOD selection是正確的，只是debug模式並不會刪除點，但Nanite模式會刪除點
-	- 邏輯怪怪的，為什麼Nanite模式會刪除點? 不應該是很稀疏的點嗎?不至於刪除吧?
-	- GaussianClusterBuilder要深入跟AI讀一次，看他到底在幹嘛，確實有很大的機率是這裡錯了
-	- 使用debug模式2，目前看起來只有對一半
-	- 看起來是因為有一些點比較稀疏??
-	- 反正就是LOD不對
-
-
-***有一些點幾乎是藍的 > 是不是跟疏密程度有關? morton是不是不是用於GS這種點的數量差很多的?
-***密度較高的地方可以看到cluster一直在變，但密度較低的地方可以看到cluster沒什麼在變 > 因為低密度的地方MaxError一直都很大?
-***假設每128一個cluster，那密度比較稀疏的地方不就很大一個面積都是一同一個cluster? 這樣MaxError不就很大?
-***仙人掌好像沒有這個問題
-***實際仙人掌開啟render模式的時候會看到另一個重複點的問題 > 我覺得先用這個debug好了
-
-
-
-
-***為什麼1D array memory cache會比較快
-
-採用哪層LOD是怎麼被決定的? 這寫在code的哪裡?照理說靠近相機的範圍應該都會載入低LOD的對吧? 會有什麼例外嗎?
-***如果新的merge的點跟原本的距離差太多(比如max error容許度是4，但大於4了)，就不會使用這個LOD cluster > 所以其實是再算舊的點跟新的點的距離!?
-***距離要從world space轉成是screen space，因為我們在乎的是screen space的距離
-***視覺上差太多就會用original的，視覺上沒什麼差就用LOD splat的
-
-
-
-
 [Screen Space Projected Error]
 	*這一段有很大的機率有問題
 	- Error = How much the LOD version is "wrong" compared to the original
@@ -161,15 +122,12 @@ Any suggestion on how to add this LOD debug feature?
 	- MaxError = The actual error value STORED in each cluster (computed during import)
 	- ErrorThreshold = The acceptable limit SET by user (runtime setting)
 	- screen space error是在runtime下計算的
-
-ErrorThreshold > 就是可以接受的範圍
-MaxError跟ErrorThreshold有點問題
-每個cluster都會有MaxError
-MaxError的數值是蠻隨機的? 畢竟cluster是依照morton code去切的
-MaxError是用來幹嘛的?
-MaxError算是離散程度，就是一個在world space中merge splat跟cluster splat的最大距離 > 其實就是看這段長度在screen space下有多長(是否有在ErrorThreshold的容許範圍)
-
-
+	- ErrorThreshold > 就是可以接受的範圍
+	- MaxError跟ErrorThreshold有點問題
+	- 每個cluster都會有MaxError
+	- MaxError的數值是蠻隨機的? 畢竟cluster是依照morton code去切的
+	- MaxError是用來幹嘛的?
+	- MaxError算是離散程度，就是一個在world space中merge splat跟cluster splat的最大距離 > 其實就是看這段長度在screen space下有多長(是否有在ErrorThreshold的容許範圍)
 
 
 [Cluster System]
@@ -190,82 +148,6 @@ MaxError算是離散程度，就是一個在world space中merge splat跟cluster 
 	- Does LOD splats include the LOD data of each cluster? So leaf cluster is LOD 0, the merged higher level cluster will be LOD1, then the merged even higher level cluster will be LOD2, somthing like that?
 	- As I remember our debug console command "gs.ShowClusterBounds 2" will show the LOD by color in the level. Is it displaying the color based on the current LOD data stored inside LOD splats?
 	
-
-
-
-	
-*目前不知道cluster的資料到底長怎樣
-	- 看起來是UGaussianSplatAsset有兩層Array, splat data 跟clustter data
-	- position array > 沒錯就是vector array
-	- rotation array
-	- color array
-	- cluster怎麼被存起來的?
-	- bounding box怎麼被存起來的?
-	- 這些跟bulkdata有關嗎?
-	- 還是說他是以整個class的方式安插進去?
-	- 最終肯定是UGaussianSplatAsset
-	- 主要儲存GS資料的是這個對吧? FGaussianSplatData > 這是每一個點一個struct，包含position, rotation, scale...等資料
-	- cluster asset包splat asset?
-	- 看起來是FGaussianCluster裡面包FGaussianSplatData
-	- 那這個呢?FGaussianLODSplat > 看起來leaf cluster是沒有用到這個的
-	- 用ClusterID去存目前cluster, child cluster, parent cluster的資料
-	- LODLevel會存這層cluster的LOD
-
-
-
-
-This is an Unreal Engine plugin I created called "GaussianSplatting" "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
-
-Currently I am building a feature which can render the gaussian splats based on the cluster.
-The idea is inspired by Unreal Engine's Nanite.
-No need to render all the gaussian splat points all the time.
-Just render the details required for the screen.
-
-As I know we used a technique called Screen Space Error for choosing the LOD.
-But I am not sure what MaxError and ErrorThreshold mean.
-Can you explain?
-As I know we will merge the leaf cluster points into a higher level point called LOD Splat.
-If the distance between merged point and original point is called world space error.
-After the world space error got converted to screen space, it become screen space error.
-If the screen space error is larger than acceptable value we will load lower level LOD which will have higher density points.
-Does MaxError and ErrorThreshold related to this process?
-
-
-
-[potential]
-- Maybe we make the cluster decrease more dramatically so I can see the difference more obviously.
-- 必須narrow down > 吃掉太多token了
-- claude說是"CalculateClusterError in GaussianClusterBuilder.cpp:311-346", MaxError is always near-zero > 但為什麼顏色會有反應
-- 先分析一下claude說的有沒有合理
-
-
-先請cluade解釋一下目前的cluster邏輯
-	***現在很明顯就是cluster相關的東西錯了
-	- FGaussianLODSplat > 不知道要這個簡化版的資料要幹嘛
-	- Cluster的ID是做什麼用的? 怎麼產生的? 隨機變數??
-	- cluster ID 跟LOD的關係是什麼?
-	- 每個cluster都會有個bounds? bounds是怎麼被計算的? 被用來幹嘛?
-	- bounds會是球狀的嗎?為什麼是球的?每個LOD的cluster都會有球狀bounds嗎?
-	- 有個特殊的cluster struct
-	- FGaussianCluster跟FGaussianGPUCluster差在哪? 都有在用嗎?
-	- 不是有gaussian splat asset了，為什麼還要有FGaussianSplat
-	- FGaussianSplat跟FGaussianGPULODSplat都有在用嗎?
-	- padding是什麼? 為什麼這種struct會是GPU friendly?
-	- GPU版本的裡面似乎又包了CPU版本的，為什麼有這種設計?
-	- GaussianClusterBuilder裡面有用到GaussianClusterTypes
-	- 也許用Morton code創建cluster這件事本身就有錯?
-	- 我其實不明白merge本身做了什麼事情
-	- cluster的哪一部分是預先做的? 哪一部分是runtime做的?
-	- 看不懂Morton code的目的是什麼，跟cluster這件事有什麼關係? 我猜是幫cluster之間做編碼，以便找到需要的cluster?
-	- 而且已Nanite的概念來說，應該只會減少點的密度，不至於會少到破洞吧?
-	- morton code是一種空間編碼
-	- 但GS的點在場景中這麼隨機，morton code要怎麼運作
-	- BVH又是什麼? 我的cluster結構跟BVH有關嗎?
-	- morton code跟quad tree是有關係的嗎?
-	- PLY進來之後是處理完再轉成uasset嗎?
-	- GaussianSplatAsset確實有引用GaussianClusterTypes
-
 
 --------------------------------------------------------------------------------------------
 [General]
