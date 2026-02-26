@@ -2,47 +2,10 @@
 [To Do list]
 ***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
 ***SH function目前是失敗的
-***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小
-***LOD切換看能不能再更不明顯一點
 ***整理筆記
 **************************************************************************************************
-
-[Nanite的打開與關閉]
-*試試看default就渲染Nanite > 只是應該要從asset確定是否要讓這個asset開啟Nanite > 就跟一般的Nanite一樣
-*先plan討論，不要直接開始寫。就是開一個規格書
-	- gs.UseCompaction > 這應該不需要留著，我們會一直使用compact mode才對 > 先查一下這個具體在幹嘛 > 這個先拿掉，畢竟應該是不管怎麼樣都要開啟才對
-	- 順暢地打開跟關閉很重要，畢竟這不是必要的功能
-	- nanite debug mode應該要能看到開啟跟關閉
-	- command line應該要拿掉 > asset action應該就直接決定要不要渲染nanite了
-	- 轉成Nanite的PLY points有辦法回復嗎?
-	*- 要先打這一串command "gs.UseLODRendering 1" 才能開啟LOD render > 但這是全局開啟，我只想開啟部分asset而已
-	*- 在asset action加一個新的category叫Gaussian Splat
-	- Nanite的debug顯示要正確 	
-
-
-
-
-Okay there is an issue.
-If I disabled asset's Nanite feature in content browser and place it inside the level, of course the Nanite feature will not be enabled.
-After we placed it into the level, in content browser, I then enabled Nanite.
-However the asset already existed inside the level will not have Nanite enabled.
-I need to drag and drop another new asset into the level to the see the Nanite enabled version.
-As the result, although we checked the Nanite checkbox in content browser, we will have 1 asset has Nanite enabled and 1 asset has Nanite disabled.
-Do you know why this happened?
-I thought the data stored in the gaussian splat asset are totally different when we enabled and disabled the Nanite feature?
-Why the same asset can has 2 different result appear in the level?
-Do you know how to fix it?
- 
-
-
-
-
-
-問題
-- 原本在場景中的asset > asset在content browser中轉Nanite之後，並不會開啟，需要重新drag and drop
-- 沒開啟Nanite的是黑的，但現在只有物體是黑的，這樣不太對 > 應該是整個畫面都是黑的，只有nanite開啟的是有顏色的
 
 
 
@@ -50,6 +13,15 @@ Do you know how to fix it?
 - gs.LODErrorThreshold
 - gs.ShowClusterStats
 - gs.ShowClusterBounds 2 > 這可以拿掉了
+
+
+
+
+[SparkJS]
+***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
+
+[LOD切換更不明顯一點]
+	- 
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]

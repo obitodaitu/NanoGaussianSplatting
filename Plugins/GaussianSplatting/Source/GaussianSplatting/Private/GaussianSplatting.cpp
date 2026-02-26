@@ -26,10 +26,9 @@ TAutoConsoleVariable<int32> CVarShowClusterBounds(
 	TEXT("gs.ShowClusterBounds"),
 	0,
 	TEXT("Debug visualization for Gaussian Splat clusters (Nanite-style).\n")
-	TEXT("Colors each splat based on its cluster ID for debugging.\n")
+	TEXT("When enabled, shows cluster colors on black background (like Nanite debug view).\n")
 	TEXT(" 0: Off (default)\n")
-	TEXT(" 1: Show cluster colors (each cluster gets a unique random color)\n")
-	TEXT(" 2: Show LOD level brightness (dark blue=leaf, bright yellow=higher LOD)"),
+	TEXT(" 1: Show cluster colors (each cluster gets a unique random color)"),
 	ECVF_RenderThreadSafe);
 
 /** Show cluster visibility statistics */
@@ -147,9 +146,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		return;
 	}
 
+	// Check if debug mode is enabled - if so, clear to black like Nanite debug view
+	int32 DebugMode = CVarShowClusterBounds.GetValueOnRenderThread();
+	ERenderTargetLoadAction ColorLoadAction = (DebugMode > 0) ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
+
 	// Create render pass parameters with the scene color as render target
 	FRenderTargetParameters* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
-	PassParameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, ERenderTargetLoadAction::ELoad);
+	PassParameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, ColorLoadAction);
 	if (DepthTexture)
 	{
 		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(
