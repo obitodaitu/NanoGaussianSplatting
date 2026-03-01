@@ -1206,7 +1206,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	VSParameters.SortKeysBuffer = GlobalAccumulator->GlobalSortKeysBufferSRV;
 	VSParameters.SplatCount = TotalSplatCount;
 	VSParameters.DebugMode = static_cast<uint32>(FMath::Max(0, DebugMode));
-	VSParameters.EnableNanite = 0; // Global draw doesn't map 1:1 to a single proxy's Nanite state
+	VSParameters.EnableNanite = 1;
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
@@ -1613,7 +1613,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	VSParameters.SortKeysBuffer  = GlobalAccumulator->GlobalSortKeysBufferSRV;
 	VSParameters.SplatCount      = GlobalAccumulator->AllocatedCount;  // Upper bound for VS guard
 	VSParameters.DebugMode       = static_cast<uint32>(FMath::Max(0, DebugMode));
-	VSParameters.EnableNanite    = 0;  // Not mapped 1:1 to a single proxy
+	VSParameters.EnableNanite    = 1;
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 

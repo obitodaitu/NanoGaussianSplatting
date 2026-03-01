@@ -262,9 +262,15 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 		FGaussianGlobalAccumulator* RawAccumulator = GlobalAccumulator.Get();
 
-		// Read render budget for global accumulator buffer cap
+		// Read render budget for global accumulator buffer cap.
+		// Disable budget when forcing LOD level — the debug command needs to show
+		// all assets regardless of splat count (user expects to see quality vs performance).
 		int32 BudgetVal = CVarMaxRenderBudget.GetValueOnRenderThread();
 		uint32 MaxRenderBudget = (BudgetVal > 0) ? (uint32)BudgetVal : 0;
+		if (CurrentDebugForceLODLevel >= 0)
+		{
+			MaxRenderBudget = 0;  // Unlimited — debug mode overrides budget
+		}
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("GaussianSplatRendering_Global"),

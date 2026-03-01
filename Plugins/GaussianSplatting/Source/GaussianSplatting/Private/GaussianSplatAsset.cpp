@@ -334,7 +334,12 @@ void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData
 {
 	// Store texture dimensions
 	ColorTextureWidth = GaussianSplattingConstants::ColorTextureWidth;
-	ColorTextureHeight = FMath::DivideAndRoundUp(SplatCount, ColorTextureWidth);
+	const int32 TileSize = GaussianSplattingConstants::MortonTileSize; // 16
+	const int32 EntriesPerTile = TileSize * TileSize; // 256
+	const int32 TilesPerRow = ColorTextureWidth / TileSize; // 128
+	int32 NumTiles = FMath::DivideAndRoundUp(SplatCount, EntriesPerTile);
+	int32 TileRows = FMath::DivideAndRoundUp(NumTiles, TilesPerRow);
+	ColorTextureHeight = TileRows * TileSize;
 
 	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureData: Creating %dx%d data for %d splats"),
 		ColorTextureWidth, ColorTextureHeight, SplatCount);
