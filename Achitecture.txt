@@ -2,51 +2,30 @@
 [To Do list]
 ***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate) > 但打光不是必要的，畢竟原本的光也是bake在裡面了 > 第一版應該不用做到這個
 ***SH function目前是失敗的
-*bulkdata有大小限制 > aerial的野柳超出bulk data的大小
+*bulkdata有大小限制 > aerial的野柳超出bulk data的大小 > 沒關係，不用到那麼大
 ***整理筆記
+***初始效能慢 > 不知道為什麼要等一下效能才會上來!?
+***再對比一次Nanite, spark, supersplat的設計
+***製作collision > 用point去產生bounding box就好 > 加一個asset action check box
+***先做一個tile切割器，再開nanite跟level streaming就好
+***Asset好像是反的
+***測試多種PLY，兼容性問題	
+***gs.MaxRenderBudget??
+***gs.UseGlobalAccumulator > do we need this? This should always be on right?
+***大地形肯定是要切成多塊單元的，不管是asset還是地形，邏輯其實都一樣
 **************************************************************************************************
-
-[效能優化]
-	- 2070顯卡，放十幾個LOD 5 asset效能就不行了
-	- 切換到LOD5，還是花了很多時間在做radix sort!? > 看unreal Insight
-	- 700K*20 LOD0 > 20fps
-	- 700K*20 LOD5 > 40fps
-	- 並沒有辦法做到像Nanite一樣Asset自由
-
-
-This is an Unreal Engine plugin I created called GaussianSplatting "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting ply file inside Unreal Engine.
-
-I created a Nanite inspired cluster system but for gaussian splats.
-Instead of rendering all the gaussian splats all the time, the plugin will use the cluster system and screen space error to render  only the detailed needed for the screen.
-
-Although the system is working, the performance is not as good as I expected.
-I have a guassian splat asset with around 719K points for testing.
-I placed 20 assets into the level.
-The performance is not good.
-If I forced the Gaussian Splat LOD to 0, it will render the original quality and the fps is 20.
-If I forced the Gaussian Splat LOD to 5, which means the lowest quality for now, the the fps is 40.
-Although it's better but just a bit.
-I do ran Unreal Insight for tracking the performance.
-I send you the screenshot.
-Seems like gaussian splat radix sort is the performance killer.
-In the screen I can see LOD 5 does not have many points. 
-But why the performance is bad?
-Do you have any idea to improve the performance?
-
-
-
-
 
 [LOD切換更不明顯一點]
 	- force各LOD看細節如何
 	- LOD 2,3,4,5好像都有一些洞 > 但遠看其實看不到那些洞
 	- 點的數量很少或很多的情況怎麼辦
 	- 單一大塊場景用nanite好像沒幫助，多個小asset好像比較有幫助
+	- 對比一下Nanite的cluster切換是長怎樣 > 怎麼感覺Nanite切得更碎片化
+	- LOD切換的時候顏色會有誤差
+	- 看一下顏色變化很大的地方出現在哪個時間點 > 主要是因為什麼LOD切換造成的? 錄影好了，因為我覺得前面的轉換沒什麼問題 
+	- 前後遮擋是否有做culling? 應該要做culling (Occlusion culling)
+	- 有沒有辦法可以確認近看遠看的樣子還是很接近? 好像是密度跟顏色差異造成的?
 
-
-[SparkJS]
-***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 
 
 
@@ -95,6 +74,11 @@ Do you have any idea to improve the performance?
   LOD Level 4:            2/4 = 1 LOD splat per cluster
 
 -----------------------------------------------------------------------------------------
+
+[GlobalAccumulator]
+-bindless rendering
+-indirect rendering
+
 
 [Screen Space Projected Error]
 	*這一段有很大的機率有問題
