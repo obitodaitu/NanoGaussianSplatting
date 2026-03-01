@@ -36,10 +36,82 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	// Store the position format from the asset (critical for shader to read correctly)
 	PositionFormat = Asset->PositionFormat;
 
-	// Cache data for RHI initialization (copy from bulk data)
-	Asset->GetPositionData(CachedPositionData);
-	Asset->GetOtherData(CachedOtherData);
-	Asset->GetSHData(CachedSHData);
+	// --- Packed Splat Data (16 bytes/splat) ---
+	// Pack position (float16×3), rotation (octahedral 3 bytes), scale (log uint8×3),
+	// and color+opacity (uint8×4) into a single buffer, replacing separate
+	// PositionBuffer (12 B), OtherDataBuffer (28 B), and ColorTexture (~8 B).
+	{
+		// Read source data from asset bulk data
+		TArray<uint8> RawPositionData;
+		TArray<uint8> RawOtherData;
+		TArray<uint8> RawColorTextureData;
+		Asset->GetPositionData(RawPositionData);
+		Asset->GetOtherData(RawOtherData);
+		Asset->GetColorTextureData(RawColorTextureData);
+
+		const int32 ColorTexWidth = Asset->ColorTextureWidth;
+		const int32 ColorTexHeight = Asset->ColorTextureHeight;
+		const FFloat16Color* ColorPixels = nullptr;
+		bool bHasColor = (RawColorTextureData.Num() > 0 && ColorTexWidth > 0 && ColorTexHeight > 0);
+		if (bHasColor)
+		{
+			ColorPixels = reinterpret_cast<const FFloat16Color*>(RawColorTextureData.GetData());
+		}
+
+		const int32 PosBytesPerSplat = 12;   // 3 × float32
+		const int32 OtherBytesPerSplat = 28; // 4 × float32 (quat) + 3 × float32 (scale)
+
+		CachedPackedSplatData.SetNumUninitialized(SplatCount * GaussianSplattingConstants::PackedSplatStride);
+		uint32* PackedPtr = reinterpret_cast<uint32*>(CachedPackedSplatData.GetData());
+		const float* PosFloats = reinterpret_cast<const float*>(RawPositionData.GetData());
+		const float* OtherFloats = reinterpret_cast<const float*>(RawOtherData.GetData());
+
+		for (int32 i = 0; i < SplatCount; i++)
+		{
+			// Read position (3 × float32)
+			FVector3f Position(
+				PosFloats[i * 3 + 0],
+				PosFloats[i * 3 + 1],
+				PosFloats[i * 3 + 2]);
+
+			// Read rotation (quaternion XYZW) and scale (3 × float32)
+			const float* OtherBase = OtherFloats + i * 7; // 28 bytes / 4 = 7 floats
+			FQuat4f Rotation(OtherBase[0], OtherBase[1], OtherBase[2], OtherBase[3]);
+			FVector3f Scale(OtherBase[4], OtherBase[5], OtherBase[6]);
+
+			// Read color from Morton-swizzled texture
+			float ColorR = 1.0f, ColorG = 1.0f, ColorB = 1.0f, Opacity = 1.0f;
+			if (bHasColor)
+			{
+				int32 TexX, TexY;
+				GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTexWidth, TexX, TexY);
+				if (TexY < ColorTexHeight)
+				{
+					const FFloat16Color& Pixel = ColorPixels[TexY * ColorTexWidth + TexX];
+					ColorR = FMath::Clamp(Pixel.R.GetFloat(), 0.0f, 1.0f);
+					ColorG = FMath::Clamp(Pixel.G.GetFloat(), 0.0f, 1.0f);
+					ColorB = FMath::Clamp(Pixel.B.GetFloat(), 0.0f, 1.0f);
+					Opacity = FMath::Clamp(Pixel.A.GetFloat(), 0.0f, 1.0f);
+				}
+			}
+
+			// Pack into 4 × uint32 (16 bytes)
+			GaussianSplattingUtils::PackSplatToUint4(
+				Position, Rotation, Scale,
+				ColorR, ColorG, ColorB, Opacity,
+				&PackedPtr[i * 4]);
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Packed %d splats into %d bytes (16 B/splat, was %d B/splat)"),
+			SplatCount, CachedPackedSplatData.Num(), PosBytesPerSplat + OtherBytesPerSplat);
+
+		// Source data no longer needed
+		RawPositionData.Empty();
+		RawOtherData.Empty();
+		RawColorTextureData.Empty();
+	}
+
+	// Legacy: chunk data still needed for shader binding (dummy)
 	CachedChunkData = Asset->ChunkData;
 
 	// Set Nanite enabled flag from asset
@@ -131,13 +203,29 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	}
 
 	CreateStaticBuffers(RHICmdList);
-	CreateDynamicBuffers(RHICmdList);
+
+	// TotalSplatCount is needed by CreateClusterBuffers (compaction buffer sizing).
+	// Set it here so it's valid regardless of whether dynamic buffers are created.
+	TotalSplatCount = SplatCount;
+
+	// When the global accumulator is active, per-proxy dynamic buffers (ViewData, sort,
+	// histogram) are never used — the global path owns all working buffers. Skipping
+	// allocation saves ~49 MB per proxy (e.g. 1.9 GB for 38 proxies).
+	static IConsoleVariable* CVarGlobalAccum = IConsoleManager::Get().FindConsoleVariable(TEXT("gs.UseGlobalAccumulator"));
+	const bool bUseGlobalAccumulator = CVarGlobalAccum && CVarGlobalAccum->GetInt() != 0;
+	if (!bUseGlobalAccumulator)
+	{
+		CreateDynamicBuffers(RHICmdList);
+	}
+
 	CreateIndexBuffer(RHICmdList);
 	CreateClusterBuffers(RHICmdList);
 }
 
 void FGaussianSplatGPUResources::ReleaseRHI()
 {
+	PackedSplatBuffer.SafeRelease();
+	PackedSplatBufferSRV.SafeRelease();
 	PositionBuffer.SafeRelease();
 	PositionBufferSRV.SafeRelease();
 	OtherDataBuffer.SafeRelease();
@@ -239,68 +327,30 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 
 void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmdList)
 {
-	// Position buffer
-	if (CachedPositionData.Num() > 0)
+	// Packed splat buffer (16 bytes/splat): replaces PositionBuffer + OtherDataBuffer + ColorTexture
+	if (CachedPackedSplatData.Num() > 0)
 	{
 		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianPositionBuffer"),
-			CachedPositionData.Num(),
+			TEXT("GaussianPackedSplatBuffer"),
+			CachedPackedSplatData.Num(),
 			0,
 			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		PositionBuffer = RHICmdList.CreateBuffer(Desc);
+		PackedSplatBuffer = RHICmdList.CreateBuffer(Desc);
 
-		void* Data = RHICmdList.LockBuffer(PositionBuffer, 0, CachedPositionData.Num(), RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedPositionData.GetData(), CachedPositionData.Num());
-		RHICmdList.UnlockBuffer(PositionBuffer);
+		void* Data = RHICmdList.LockBuffer(PackedSplatBuffer, 0, CachedPackedSplatData.Num(), RLM_WriteOnly);
+		FMemory::Memcpy(Data, CachedPackedSplatData.GetData(), CachedPackedSplatData.Num());
+		RHICmdList.UnlockBuffer(PackedSplatBuffer);
 
-		PositionBufferSRV = RHICmdList.CreateShaderResourceView(
-			PositionBuffer, FRHIViewDesc::CreateBufferSRV()
+		PackedSplatBufferSRV = RHICmdList.CreateShaderResourceView(
+			PackedSplatBuffer, FRHIViewDesc::CreateBufferSRV()
 				.SetType(FRHIViewDesc::EBufferType::Raw));
 	}
 
-	// Other data buffer (rotation + scale)
-	if (CachedOtherData.Num() > 0)
-	{
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianOtherDataBuffer"),
-			CachedOtherData.Num(),
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		OtherDataBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(OtherDataBuffer, 0, CachedOtherData.Num(), RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedOtherData.GetData(), CachedOtherData.Num());
-		RHICmdList.UnlockBuffer(OtherDataBuffer);
-
-		OtherDataBufferSRV = RHICmdList.CreateShaderResourceView(
-			OtherDataBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-	}
-
-	// SH buffer
-	if (CachedSHData.Num() > 0)
-	{
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSHBuffer"),
-			CachedSHData.Num(),
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		SHBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(SHBuffer, 0, CachedSHData.Num(), RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedSHData.GetData(), CachedSHData.Num());
-		RHICmdList.UnlockBuffer(SHBuffer);
-
-		SHBufferSRV = RHICmdList.CreateShaderResourceView(
-			SHBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-	}
+	// Legacy: PositionBuffer, OtherDataBuffer, SHBuffer no longer created
+	// (data is packed into PackedSplatBuffer above)
 
 	// Chunk buffer - Always create at least a dummy buffer for shader binding
-	// (Even though we always use Float32 positions now, shader still expects this parameter)
 	{
 		uint32 ChunkCount = CachedChunkData.Num();
 		if (ChunkCount == 0)
@@ -335,6 +385,7 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 	}
 
 	// Clear cached data
+	CachedPackedSplatData.Empty();
 	CachedPositionData.Empty();
 	CachedOtherData.Empty();
 	CachedSHData.Empty();
@@ -343,10 +394,6 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 
 void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICmdList)
 {
-	// UNIFIED APPROACH: SplatCount already includes LOD splats (appended in factory)
-	// No need for separate TotalSplatCount calculation
-	TotalSplatCount = SplatCount;
-
 	// Pad to power of 2 for bitonic sort
 	uint32 PaddedCount = FMath::RoundUpToPowerOfTwo(TotalSplatCount);
 
@@ -479,41 +526,10 @@ void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 	}
 
-	// Sort indirect dispatch args buffer: 3 uints {NumTiles, 1, 1} for CountCS/ScatterCS
-	{
-		const uint32 BufferSize = 3 * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortIndirectArgsBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_DrawIndirect | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortIndirectArgsBuffer = RHICmdList.CreateBuffer(Desc);
-		SortIndirectArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			SortIndirectArgsBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// Sort parameters buffer: 2 uints {SortCount, NumTiles} for radix sort shaders
-	{
-		const uint32 BufferSize = 2 * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortParamsBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortParamsBuffer = RHICmdList.CreateBuffer(Desc);
-		SortParamsBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			SortParamsBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		SortParamsBufferSRV = RHICmdList.CreateShaderResourceView(
-			SortParamsBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
+	// NOTE: SortIndirectArgsBuffer and SortParamsBuffer are created in
+	// CreateClusterBuffers() because they're needed by PrepareIndirectArgs
+	// in the Nanite compaction path, even when per-proxy dynamic buffers
+	// are skipped under the global accumulator.
 }
 
 void FGaussianSplatGPUResources::CreateIndexBuffer(FRHICommandListBase& RHICmdList)
@@ -1037,6 +1053,44 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 
 		IndirectDispatchArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
 			IndirectDispatchArgsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Sort indirect args + sort params: needed by PrepareIndirectArgs in the
+	// Nanite compaction path. Created here (not in CreateDynamicBuffers) because
+	// per-proxy dynamic buffers are skipped under the global accumulator, but
+	// PrepareIndirectArgs still runs per-proxy to set up indirect dispatch for
+	// CalcViewDataCompactedGlobal.
+	{
+		const uint32 BufferSize = 3 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSortIndirectArgsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_DrawIndirect | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SortIndirectArgsBuffer = RHICmdList.CreateBuffer(Desc);
+		SortIndirectArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			SortIndirectArgsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+	{
+		const uint32 BufferSize = 2 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSortParamsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SortParamsBuffer = RHICmdList.CreateBuffer(Desc);
+		SortParamsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			SortParamsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		SortParamsBufferSRV = RHICmdList.CreateShaderResourceView(
+			SortParamsBuffer, FRHIViewDesc::CreateBufferSRV()
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 	}

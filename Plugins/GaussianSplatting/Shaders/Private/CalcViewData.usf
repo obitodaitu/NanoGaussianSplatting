@@ -5,13 +5,9 @@
 #include "/Plugin/GaussianSplatting/Private/GaussianSplatting.ush"
 
 // Shader parameters
-ByteAddressBuffer PositionBuffer;
-ByteAddressBuffer OtherDataBuffer;
-ByteAddressBuffer SHBuffer;
-StructuredBuffer<FGaussianChunkInfo> ChunkBuffer;
-Texture2D ColorTexture;
-SamplerState ColorSampler;
-RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculaed result to ViewDataBuffer
+ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
+ByteAddressBuffer SHBuffer;           // SH data (currently unused)
+RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
 // Cluster visibility integration (UNIFIED APPROACH)
 // SplatClusterIndexBuffer maps ALL splats (original + LOD) to their cluster
@@ -40,15 +36,13 @@ uint SplatCount;
 uint SHOrder;
 float OpacityScale;
 float SplatScale;
-uint2 ColorTextureSize;
-uint PositionFormat; // 0=Float32 (only supported format now)
-uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
 uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
 
 // Global compaction path: read per-proxy base offset from GPU prefix-sum buffer
 StructuredBuffer<uint> GlobalBaseOffsetsBuffer; // [MAX_PROXY_COUNT+1] prefix sums
 uint ProxyIndex;             // Index of this proxy in the global array
 uint UseGlobalCompactionPath; // 1 = read offset from GlobalBaseOffsetsBuffer[ProxyIndex]
+uint MaxRenderBudget; // Budget cap: skip writes at indices >= this value (0 = no cap)
 
 // Check if a leaf cluster is visible using the visibility bitmap
 bool IsClusterVisible(uint clusterIndex)
@@ -66,6 +60,106 @@ bool IsLODClusterSelected(uint clusterIndex)
 	return (LODClusterSelectedBitmap[bitmapIndex] & bitMask) != 0;
 }
 
+// Helper: write an invalid (culled) splat into ViewDataBuffer
+void WriteInvalidSplat(uint outputIndex, uint clusterID, uint lodLevel)
+{
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = float4(0, 0, 0, -1);
+	viewData.PackedColorRG = 0;
+	viewData.PackedColorBA = 0;
+	viewData.Axis1 = float2(0, 0);
+	viewData.Axis2 = float2(0, 0);
+	viewData.ClusterID = clusterID;
+	viewData.Padding = lodLevel;
+	ViewDataBuffer[outputIndex] = viewData;
+}
+
+// Core: transform a single splat to screen space and write to ViewDataBuffer
+void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uint selectedLODLevel)
+{
+	// Unpack splat data from packed buffer
+	FUnpackedSplat splat = UnpackSplat(PackedSplatBuffer, splatIndex);
+
+	float3 localPos = splat.Position;
+	float4 rotation = splat.Rotation;
+	float3 scale = splat.Scale * SplatScale;
+	float4 colorOpacity = splat.ColorOpacity;
+	float opacity = colorOpacity.a * OpacityScale;
+
+	// Transform to world space
+	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
+	float4 clipPos = mul(worldPos, WorldToClip);
+
+	// Cull if behind camera
+	if (clipPos.w <= 0.0)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// Transform to view space
+	float4 viewPos = mul(worldPos, WorldToView);
+
+	// Clamp view position to prevent extreme projections at edge of view
+	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
+	float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
+	float limX = 1.3 * tanFovX;
+	float limY = 1.3 * tanFovY;
+	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
+	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
+
+	// Calculate covariance
+	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
+	float3x3 localToWorldRot = (float3x3)LocalToWorld;
+	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+	float3x3 viewMat = (float3x3)WorldToView;
+	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+
+	// Decompose to axes
+	float2 axis1, axis2;
+	DecomposeCovariance2D(cov2D, axis1, axis2);
+
+	// Convert to NDC
+	axis1 = axis1 / ScreenSize * 4.0;
+	axis2 = axis2 / ScreenSize * 4.0;
+
+	// Safety clamp
+	float maxAxisSize = 2.0;
+	if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
+	{
+		axis1 = float2(0.01, 0.0);
+	}
+	if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
+	{
+		axis2 = float2(0.0, 0.01);
+	}
+
+	// Frustum culling
+	float2 ndcCenter = clipPos.xy / clipPos.w;
+	float2 ndcExtent = abs(axis1) + abs(axis2);
+	if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
+		ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// Color: sRGB → linear conversion
+	// Packed color stores sRGB values as uint8. Convert to linear for UE SceneColor.
+	float3 finalColor = pow(max(colorOpacity.rgb, 0.0), 2.2);
+
+	// Store view data
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = clipPos;
+	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
+	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
+	viewData.Axis1 = axis1;
+	viewData.Axis2 = axis2;
+	viewData.ClusterID = selectedClusterID;
+	viewData.Padding = selectedLODLevel;
+	ViewDataBuffer[outputIndex] = viewData;
+}
+
 [numthreads(256, 1, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -81,11 +175,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 
 		// Determine the base offset for writing into ViewDataBuffer.
-		// Global compaction path: read GPU-computed prefix sum for this proxy.
-		// Per-proxy path: use the CPU-supplied GlobalBaseOffset (typically 0).
 		uint CompactionGlobalBase = UseGlobalCompactionPath
 			? GlobalBaseOffsetsBuffer[ProxyIndex]
 			: GlobalBaseOffset;
+
+		// Budget cap: skip writes beyond MaxRenderBudget to prevent OOB access
+		if (MaxRenderBudget > 0u && (CompactionGlobalBase + threadIndex) >= MaxRenderBudget)
+		{
+			return;
+		}
 
 		// Read actual splat index from compacted list
 		uint splatIndex = CompactedSplatIndices[threadIndex];
@@ -104,112 +202,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			selectedLODLevel = (packedSelected >> 24) & 0xFF;
 		}
 
-		// Load splat data
-		float3 localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
-		float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
-		float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;
-
-		// Load color
-		float4 colorOpacity;
-		if (UseDefaultColor)
-		{
-			colorOpacity = float4(1.0, 1.0, 1.0, 1.0);
-		}
-		else
-		{
-			colorOpacity = LoadColor(ColorTexture, ColorSampler, splatIndex, ColorTextureSize);
-		}
-		float opacity = colorOpacity.a * OpacityScale;
-
-		// Transform to world space
-		float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
-		float4 clipPos = mul(worldPos, WorldToClip);
-
-		// Cull if behind camera
-		if (clipPos.w <= 0.0)
-		{
-			FGaussianSplatViewData viewData;
-			viewData.ClipPosition = float4(0, 0, 0, -1);
-			viewData.PackedColorRG = 0;
-			viewData.PackedColorBA = 0;
-			viewData.Axis1 = float2(0, 0);
-			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
-			return;
-		}
-
-		// Transform to view space
-		float4 viewPos = mul(worldPos, WorldToView);
-
-		// Clamp view position
-		float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
-		float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
-		float limX = 1.3 * tanFovX;
-		float limY = 1.3 * tanFovY;
-		viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
-		viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
-
-		// Calculate covariance
-		float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
-		float3x3 localToWorldRot = (float3x3)LocalToWorld;
-		float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
-		float3x3 viewMat = (float3x3)WorldToView;
-		float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
-
-		// Decompose to axes
-		float2 axis1, axis2;
-		DecomposeCovariance2D(cov2D, axis1, axis2);
-
-		// Convert to NDC
-		axis1 = axis1 / ScreenSize * 4.0;
-		axis2 = axis2 / ScreenSize * 4.0;
-
-		// Safety clamp
-		float maxAxisSize = 2.0;
-		if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
-		{
-			axis1 = float2(0.01, 0.0);
-		}
-		if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
-		{
-			axis2 = float2(0.0, 0.01);
-		}
-
-		// Frustum culling
-		float2 ndcCenter = clipPos.xy / clipPos.w;
-		float2 ndcExtent = abs(axis1) + abs(axis2);
-		if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
-			ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
-		{
-			FGaussianSplatViewData viewData;
-			viewData.ClipPosition = float4(0, 0, 0, -1);
-			viewData.PackedColorRG = 0;
-			viewData.PackedColorBA = 0;
-			viewData.Axis1 = float2(0, 0);
-			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
-			return;
-		}
-
-		// View-dependent color
-		float3 viewDir = normalize(worldPos.xyz - CameraPosition);
-		float3 shColor = colorOpacity.rgb;  // Using DC only
-		float3 finalColor = pow(max(shColor, 0.0), 2.2);
-
-		// Store view data at compacted index (CompactionGlobalBase + threadIndex)
-		FGaussianSplatViewData viewData;
-		viewData.ClipPosition = clipPos;
-		viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
-		viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
-		viewData.Axis1 = axis1;
-		viewData.Axis2 = axis2;
-		viewData.ClusterID = selectedClusterID;
-		viewData.Padding = selectedLODLevel;
-		ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
+		ProcessSplat(splatIndex, CompactionGlobalBase + threadIndex, selectedClusterID, selectedLODLevel);
 		return;
 	}
 
@@ -221,12 +214,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	// UNIFIED APPROACH: Handle both original and LOD splats
-	// - Original splats: index < OriginalSplatCount, mapped to leaf clusters
-	// - LOD splats: index >= OriginalSplatCount, mapped to parent clusters
 	bool isLODSplat = (splatIndex >= OriginalSplatCount);
 	uint clusterIndex = 0;
-	uint selectedClusterID = 0;  // The cluster selected for visualization
-	uint selectedLODLevel = 0;   // LOD level of selected cluster
+	uint selectedClusterID = 0;
+	uint selectedLODLevel = 0;
 
 	if (UseClusterCulling)
 	{
@@ -237,240 +228,35 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			// LOD splat: check if its parent cluster is selected for LOD rendering
 			if (!UseLODRendering || !IsLODClusterSelected(clusterIndex))
 			{
-				// Parent cluster not selected for LOD - skip this LOD splat
-				FGaussianSplatViewData viewData;
-				viewData.ClipPosition = float4(0, 0, 0, -1);
-				viewData.PackedColorRG = 0;
-				viewData.PackedColorBA = 0;
-				viewData.Axis1 = float2(0, 0);
-				viewData.Axis2 = float2(0, 0);
-				viewData.ClusterID = clusterIndex;
-				viewData.Padding = 1; // Non-zero indicates LOD level
-				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, clusterIndex, 1);
 				return;
 			}
 			selectedClusterID = clusterIndex;
-			selectedLODLevel = 1; // LOD splat
+			selectedLODLevel = 1;
 		}
 		else
 		{
 			// Original splat: use leaf cluster visibility logic
 			uint leafClusterIndex = clusterIndex;
 
-			// Get the selected cluster ID and LOD level from the LOD selection (Nanite-style)
-			// Lower 24 bits = cluster ID, upper 8 bits = LOD level (packed by ClusterCulling)
 			uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
 			selectedClusterID = packedSelected & 0x00FFFFFF;
 			selectedLODLevel = (packedSelected >> 24) & 0xFF;
 
 			if (!IsClusterVisible(leafClusterIndex))
 			{
-				// Leaf cluster is culled - mark splat as invalid
-				FGaussianSplatViewData viewData;
-				viewData.ClipPosition = float4(0, 0, 0, -1);
-				viewData.PackedColorRG = 0;
-				viewData.PackedColorBA = 0;
-				viewData.Axis1 = float2(0, 0);
-				viewData.Axis2 = float2(0, 0);
-				viewData.ClusterID = selectedClusterID;
-				viewData.Padding = selectedLODLevel;
-				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
 				return;
 			}
 
 			// LOD Rendering: Skip original splats when covered by a parent's LOD representation
 			if (UseLODRendering && selectedClusterID != leafClusterIndex)
 			{
-				// This splat is covered by a parent LOD - skip it (LOD splats will render instead)
-				FGaussianSplatViewData viewData;
-				viewData.ClipPosition = float4(0, 0, 0, -1);
-				viewData.PackedColorRG = 0;
-				viewData.PackedColorBA = 0;
-				viewData.Axis1 = float2(0, 0);
-				viewData.Axis2 = float2(0, 0);
-				viewData.ClusterID = selectedClusterID;
-				viewData.Padding = selectedLODLevel;
-				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
 				return;
 			}
 		}
 	}
 
-	// Load splat data - Always Float32 format (simplified, most reliable)
-	float3 localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
-
-	// MIRROR TEST: Uncomment to check if negating Y fixes left-right mirror
-	// If this fixes the mirror, the proper fix belongs in PLYFileReader.cpp importer
-	//localPos.y = -localPos.y;
-
-	float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
-	float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;
-
-	// Load color and opacity from texture (or use default if texture not available)
-	float4 colorOpacity;
-	if (UseDefaultColor)
-	{
-		// Default: white with full opacity (debug visualization)
-		colorOpacity = float4(1.0, 1.0, 1.0, 1.0);
-	}
-	else
-	{
-		colorOpacity = LoadColor(ColorTexture, ColorSampler, splatIndex, ColorTextureSize);
-	}
-	float opacity = colorOpacity.a * OpacityScale;
-
-	// Transform to world space
-	// Note: UE passes matrices that work with mul(vector, matrix) for correct results
-	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
-
-	// DEBUG TEST: Uncomment to bypass LocalToWorld and use positions as world coordinates
-	// This helps isolate if the issue is in LocalToWorld transformation or position loading
-	//worldPos = float4(localPos, 1.0);
-
-	// Transform to clip space
-	float4 clipPos = mul(worldPos, WorldToClip);
-
-	// Cull if behind camera (clip space w <= 0 means behind or at camera plane)
-	// This is more reliable than checking view space Z which varies by convention
-	if (clipPos.w <= 0.0)
-	{
-		FGaussianSplatViewData viewData;
-		viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
-		viewData.PackedColorRG = 0;
-		viewData.PackedColorBA = 0;
-		viewData.Axis1 = float2(0, 0);
-		viewData.Axis2 = float2(0, 0);
-		viewData.ClusterID = selectedClusterID;
-		viewData.Padding = selectedLODLevel;
-		ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
-		return;
-	}
-
-	// Transform to view/camera space for covariance projection
-	float4 viewPos = mul(worldPos, WorldToView);
-
-	// Clamp view position to prevent extreme projections at edge of view (from Unity)
-	// Without this, Jacobian terms -fx*x/z^2 explode at extreme angles causing giant splats
-	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
-	float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
-	float limX = 1.3 * tanFovX;
-	float limY = 1.3 * tanFovY;
-	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
-	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
-
-	// Calculate 3D covariance from rotation and scale
-	// Rotation and scale were already converted to UE coordinate system at import time
-	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
-
-	// Transform covariance from local space to world space
-	// cov_world = R_local * cov_local * R_local^T
-	// where R_local is the rotation part of LocalToWorld
-	// For row-major matrices: mul(transpose(R), mul(cov, R)) = R * cov * R^T
-	float3x3 localToWorldRot = (float3x3)LocalToWorld;
-	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
-
-	// Get view matrix (upper 3x3)
-	float3x3 viewMat = (float3x3)WorldToView;
-
-	// Project to 2D screen covariance (pass view-space position for proper Jacobian)
-	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
-
-	// Decompose into principal axes
-	float2 axis1, axis2;
-	DecomposeCovariance2D(cov2D, axis1, axis2);
-
-	// Convert axes to NDC space
-	// Unity uses quadPos ±2 and multiplies by 2/ScreenParams, giving total factor of 4
-	// We use corner ±1, so we need factor of 4 to match: axis_ndc = axis_pixels * 4 / ScreenSize
-	axis1 = axis1 / ScreenSize * 4.0;
-	axis2 = axis2 / ScreenSize * 4.0;
-
-	// Safety check: clamp axes to reasonable NDC range and handle NaN/Inf
-	float maxAxisSize = 2.0;  // Max splat size in NDC (covers full screen)
-	if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
-	{
-		axis1 = float2(0.01, 0.0);  // Fallback to small fixed size
-	}
-	if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
-	{
-		axis2 = float2(0.0, 0.01);  // Fallback to small fixed size
-	}
-
-	// Frustum culling: discard splats whose NDC bounding box is entirely off-screen.
-	// The quad spans center ± axis1 ± axis2, so its NDC bounding box extent is
-	// |axis1| + |axis2| per component. If this box doesn't overlap [-1,1], cull it.
-	// Saves sort bandwidth and rasterization for off-screen splats.
-	{
-		float2 ndcCenter = clipPos.xy / clipPos.w;
-		float2 ndcExtent = abs(axis1) + abs(axis2);
-
-		if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
-			ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
-		{
-			FGaussianSplatViewData viewData;
-			viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
-			viewData.PackedColorRG = 0;
-			viewData.PackedColorBA = 0;
-			viewData.Axis1 = float2(0, 0);
-			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = selectedClusterID;
-			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
-			return;
-		}
-	}
-
-	// Calculate view direction for SH
-	float3 viewDir = normalize(worldPos.xyz - CameraPosition);
-
-	// Convert view direction from UE (Z-up, X-forward) to 3DGS (Y-up, Z-forward) for SH evaluation
-	// UE->3DGS: X->Z, Y->X, Z->Y
-	float3 viewDir_3DGS = float3(viewDir.y, viewDir.z, viewDir.x);
-
-	// Evaluate spherical harmonics for view-dependent color
-	float3 shColor;
-	if (UseDefaultColor)
-	{
-		// Default color mode: use white (for debug visualization)
-		shColor = float3(1.0, 1.0, 1.0);
-	}
-	else if (false && SHOrder > 0) // DEBUG: bypassed — using DC only to isolate SH issues
-	{
-		float3 sh[15];
-		LoadSH(SHBuffer, splatIndex, 15, sh);
-
-		// Original 3DGS eval_sh expects outgoing direction (surface→camera)
-		// viewDir = worldPos - cameraPos = incident direction, so negate to get outgoing
-		float3 shDir = -viewDir_3DGS;
-
-		// SH DC is stored in color texture as: color = 0.5 + SH_C0 * DC
-		// Convert back to raw SH DC coefficient
-		float3 shDC = (colorOpacity.rgb - 0.5) / SH_C0;
-
-		// EvaluateSH computes: SH_C0 * DC + higher_order_terms = (color - 0.5) + higher_order_terms
-		// Add 0.5 back to get proper color range (matching Unity's approach)
-		shColor = EvaluateSH(shDir, shDC, sh, SHOrder) + 0.5;
-	}
-	else
-	{
-		// Band 0 only - use color from texture (DC base color)
-		shColor = colorOpacity.rgb;
-	}
-
-	// Clamp color to valid range and convert from sRGB to linear
-	// 3DGS SH coefficients are trained against sRGB images, so SH evaluation
-	// produces sRGB-space values. UE's SceneColor is linear, so we must convert.
-	float3 finalColor = pow(max(shColor, 0.0), 2.2);
-
-	// Pack and store view data
-	FGaussianSplatViewData viewData;
-	viewData.ClipPosition = clipPos;
-	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
-	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
-	viewData.Axis1 = axis1;
-	viewData.Axis2 = axis2;
-	viewData.ClusterID = selectedClusterID;
-	viewData.Padding = selectedLODLevel;
-
-	ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
+	ProcessSplat(splatIndex, GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
 }

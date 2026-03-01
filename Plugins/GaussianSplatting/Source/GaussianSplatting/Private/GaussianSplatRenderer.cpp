@@ -61,9 +61,6 @@ void FGaussianSplatRenderer::Render(
 
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering);
 
-	// Check if we have a valid ColorTexture for CalcViewData
-	bool bHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
-
 	// Camera-static sort skipping: skip entire compute pipeline when nothing has changed
 	FMatrix CurrentVP = View.ViewMatrices.GetViewProjectionMatrix();
 	float CurrentErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
@@ -74,7 +71,6 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedLocalToWorld.Equals(LocalToWorld, 0.0f) &&
 		GPUResources->CachedOpacityScale == OpacityScale &&
 		GPUResources->CachedSplatScale == SplatScale &&
-		GPUResources->CachedHasColorTexture == bHasColorTexture &&
 		GPUResources->CachedErrorThreshold == CurrentErrorThreshold &&
 		GPUResources->CachedDebugMode == CurrentDebugMode &&
 		GPUResources->CachedDebugForceLODLevel == CurrentDebugForceLODLevel;
@@ -114,7 +110,7 @@ void FGaussianSplatRenderer::Render(
 			DispatchPrepareIndirectArgs(RHICmdList, GPUResources);
 
 			// Step 3: Calculate view data (indirect dispatch - only visible splats)
-			DispatchCalcViewDataCompacted(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, OriginalSplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture);
+			DispatchCalcViewDataCompacted(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, OriginalSplatCount, SHOrder, OpacityScale, SplatScale);
 
 			// Step 4: Calculate sort distances (indirect dispatch - only visible splats)
 			DispatchCalcDistancesIndirect(RHICmdList, GPUResources);
@@ -130,7 +126,7 @@ void FGaussianSplatRenderer::Render(
 			// Processes both original and LOD splats in the same buffer
 			// Original splats: check ClusterVisibilityBitmap + LOD skip logic
 			// LOD splats: check LODClusterSelectedBitmap
-			DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture, bUseLODRendering);
+			DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bUseLODRendering);
 
 			// NOTE: Separate LOD pass removed - unified approach handles LOD splats in CalcViewData
 
@@ -148,7 +144,6 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedLocalToWorld = LocalToWorld;
 		GPUResources->CachedOpacityScale = OpacityScale;
 		GPUResources->CachedSplatScale = SplatScale;
-		GPUResources->CachedHasColorTexture = bHasColorTexture;
 		GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
 		GPUResources->CachedDebugMode = CurrentDebugMode;
 		GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
@@ -168,7 +163,6 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	int32 SHOrder,
 	float OpacityScale,
 	float SplatScale,
-	bool bHasColorTexture,
 	bool bUseLODRendering)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewData);
@@ -185,36 +179,27 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
-	Parameters.PositionBuffer = GPUResources->PositionBufferSRV;
-	Parameters.OtherDataBuffer = GPUResources->OtherDataBufferSRV;
+	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
-	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
-	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();  // Uses dummy texture if real one not available
-	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
 	// Cluster visibility integration (UNIFIED APPROACH)
-	// SplatClusterIndexBuffer maps ALL splats (original + LOD) to their clusters
-	// Always bind the SRVs (dummy buffers are created for non-Nanite assets)
 	Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
 	Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
 	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
 	Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
-	// Compaction buffer (always bind, even if not used - shader checks UseCompaction flag)
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
-	Parameters.UseCompaction = 0;  // Non-compacted path
+	Parameters.UseCompaction = 0;
 	Parameters.VisibleSplatCount = 0;
 
 	if (GPUResources->bHasClusterData)
 	{
 		Parameters.UseClusterCulling = 1;
 		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
-		// OriginalSplatCount = TotalSplatCount - LODSplatCount
 		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
 	}
 	else
 	{
-		// No cluster data - process all splats (shader won't read from dummy buffers)
 		Parameters.UseClusterCulling = 0;
 		Parameters.UseLODRendering = 0;
 		Parameters.OriginalSplatCount = SplatCount;
@@ -226,13 +211,10 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
-	// Screen info - use FViewInfo::ViewRect which accounts for screen percentage
-	// This is the actual render target viewport, scaled when screen percentage < 100%
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 	FIntRect ViewRect = ViewInfo.ViewRect;
 	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
 
-	// Focal length approximation from projection matrix
 	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
 	Parameters.FocalLength = FVector2f(
 		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
@@ -243,15 +225,12 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.SHOrder = SHOrder;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
-	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
-		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat = 0;  // Always Float32 (simplified format)
-	Parameters.UseDefaultColor = bHasColorTexture ? 0 : 1;  // Use default color if no texture
 
-	// Not using global compaction path — bind dummy SRV and set flag to 0
-	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy (not read)
+	// Not using global compaction path
+	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy
 	Parameters.ProxyIndex = 0;
 	Parameters.UseGlobalCompactionPath = 0;
+	Parameters.MaxRenderBudget = 0;
 
 	// Dispatch compute shader
 	const uint32 ThreadGroupSize = 256;
@@ -806,8 +785,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	int32 OriginalSplatCount,
 	int32 SHOrder,
 	float OpacityScale,
-	float SplatScale,
-	bool bHasColorTexture)
+	float SplatScale)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataCompacted);
 
@@ -822,12 +800,8 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
-	Parameters.PositionBuffer = GPUResources->PositionBufferSRV;
-	Parameters.OtherDataBuffer = GPUResources->OtherDataBufferSRV;
+	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
-	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
-	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();
-	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
 	// Cluster visibility data (needed for debug visualization)
@@ -836,13 +810,13 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
 	Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
 	Parameters.UseClusterCulling = 1;
-	Parameters.UseLODRendering = 0;  // Not needed in compaction mode
+	Parameters.UseLODRendering = 0;
 	Parameters.OriginalSplatCount = OriginalSplatCount;
 
 	// COMPACTION MODE: Use compacted indices
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
 	Parameters.UseCompaction = 1;
-	Parameters.VisibleSplatCount = SplatCount;  // Will be read from buffer by shader
+	Parameters.VisibleSplatCount = SplatCount;
 
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
@@ -850,31 +824,26 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
-	// Screen info - use FViewInfo::ViewRect which accounts for screen percentage
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 	FIntRect ViewRect = ViewInfo.ViewRect;
 	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
 
-	// Focal length
 	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
 	Parameters.FocalLength = FVector2f(
 		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
 		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
 	);
 
-	Parameters.SplatCount = SplatCount;  // Total splat count for bounds checking
+	Parameters.SplatCount = SplatCount;
 	Parameters.SHOrder = SHOrder;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
-	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
-		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat = 0;
-	Parameters.UseDefaultColor = bHasColorTexture ? 0 : 1;
 
-	// Per-proxy compaction path — not using global offsets
-	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy (not read)
+	// Per-proxy compaction path
+	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy
 	Parameters.ProxyIndex = 0;
 	Parameters.UseGlobalCompactionPath = 0;
+	Parameters.MaxRenderBudget = 0;
 
 	// INDIRECT DISPATCH using prepared args
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
@@ -933,7 +902,6 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	int32 SHOrder,
 	float OpacityScale,
 	float SplatScale,
-	bool bHasColorTexture,
 	bool bUseLODRendering,
 	uint32 GlobalBaseOffset,
 	FGaussianGlobalAccumulator* GlobalAccumulator)
@@ -951,17 +919,13 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
-	Parameters.PositionBuffer = GPUResources->PositionBufferSRV;
-	Parameters.OtherDataBuffer = GPUResources->OtherDataBufferSRV;
+	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
-	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
-	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();
-	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Write into the GLOBAL buffer at GlobalBaseOffset
 	Parameters.ViewDataBuffer = GlobalAccumulator->GlobalViewDataBufferUAV;
 
-	// Cluster visibility (always bind; shader checks UseClusterCulling flag)
+	// Cluster visibility
 	Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
 	Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
 	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
@@ -980,7 +944,6 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 		Parameters.OriginalSplatCount = SplatCount;
 	}
 
-	// Non-compaction path in global mode
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
 	Parameters.UseCompaction = 0;
 	Parameters.VisibleSplatCount = 0;
@@ -1005,18 +968,15 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.SHOrder = SHOrder;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
-	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
-		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat = 0;
-	Parameters.UseDefaultColor = bHasColorTexture ? 0 : 1;
 
 	// KEY: tell the shader where to write in the global buffer
 	Parameters.GlobalBaseOffset = GlobalBaseOffset;
 
-	// Non-compaction global path — not using GPU prefix-sum offsets
-	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy (not read)
+	// Non-compaction global path
+	Parameters.GlobalBaseOffsetsBuffer = GPUResources->CompactedSplatIndicesBufferSRV;  // dummy
 	Parameters.ProxyIndex = 0;
 	Parameters.UseGlobalCompactionPath = 0;
+	Parameters.MaxRenderBudget = 0;
 
 	const uint32 ThreadGroupSize = 256;
 	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)SplatCount, ThreadGroupSize);
@@ -1305,7 +1265,8 @@ void FGaussianSplatRenderer::DispatchGatherVisibleCount(
 void FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
 	FRHICommandListImmediate& RHICmdList,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	int32 ProxyCount)
+	int32 ProxyCount,
+	uint32 MaxRenderBudget)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatPrefixSumVisibleCounts);
 
@@ -1334,6 +1295,7 @@ void FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
 	Parameters.GlobalSortParams          = GlobalAccumulator->GlobalSortParamsBufferUAV;
 	Parameters.GlobalDrawIndirectArgs    = GlobalAccumulator->GlobalDrawIndirectArgsBufferUAV;
 	Parameters.ProxyCount                = (uint32)ProxyCount;
+	Parameters.MaxRenderBudget           = MaxRenderBudget;
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
@@ -1362,9 +1324,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	int32 SHOrder,
 	float OpacityScale,
 	float SplatScale,
-	bool bHasColorTexture,
 	int32 ProxyIndex,
-	FGaussianGlobalAccumulator* GlobalAccumulator)
+	FGaussianGlobalAccumulator* GlobalAccumulator,
+	uint32 MaxRenderBudget)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataCompactedGlobal);
 
@@ -1379,12 +1341,8 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
-	Parameters.PositionBuffer = GPUResources->PositionBufferSRV;
-	Parameters.OtherDataBuffer = GPUResources->OtherDataBufferSRV;
+	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
-	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
-	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();
-	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Write into GLOBAL buffer
 	Parameters.ViewDataBuffer = GlobalAccumulator->GlobalViewDataBufferUAV;
@@ -1395,19 +1353,20 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.LODClusterSelectedBitmap  = GPUResources->LODClusterSelectedBitmapSRV;
 	Parameters.SelectedClusterBuffer     = GPUResources->SelectedClusterBufferSRV;
 	Parameters.UseClusterCulling         = 1;
-	Parameters.UseLODRendering           = 0;  // Not needed in compaction mode
+	Parameters.UseLODRendering           = 0;
 	Parameters.OriginalSplatCount        = OriginalSplatCount;
 
-	// COMPACTION MODE: process only visible splats from compact list
+	// COMPACTION MODE
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
 	Parameters.UseCompaction         = 1;
-	Parameters.VisibleSplatCount     = SplatCount;  // Upper bound read by shader guard
+	Parameters.VisibleSplatCount     = SplatCount;
 
-	// GLOBAL COMPACTION PATH: read base offset from GPU prefix-sum buffer
+	// GLOBAL COMPACTION PATH
 	Parameters.GlobalBaseOffsetsBuffer   = GlobalAccumulator->GlobalBaseOffsetsBufferSRV;
 	Parameters.ProxyIndex                = (uint32)ProxyIndex;
 	Parameters.UseGlobalCompactionPath   = 1;
-	Parameters.GlobalBaseOffset          = 0;  // Unused when UseGlobalCompactionPath=1
+	Parameters.GlobalBaseOffset          = 0;
+	Parameters.MaxRenderBudget           = MaxRenderBudget;
 
 	// Transform matrices
 	Parameters.LocalToWorld    = FMatrix44f(LocalToWorld);
@@ -1429,10 +1388,6 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.SHOrder       = SHOrder;
 	Parameters.OpacityScale  = OpacityScale;
 	Parameters.SplatScale    = SplatScale;
-	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
-		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat   = 0;
-	Parameters.UseDefaultColor  = bHasColorTexture ? 0 : 1;
 
 	// Use the per-proxy indirect dispatch args (filled by DispatchPrepareIndirectArgs)
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());

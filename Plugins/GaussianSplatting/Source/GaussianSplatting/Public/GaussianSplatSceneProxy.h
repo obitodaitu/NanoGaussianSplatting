@@ -30,7 +30,7 @@ public:
 	void Initialize(UGaussianSplatAsset* Asset);
 
 	/** Check if resources are valid */
-	bool IsValid() const { return bInitialized && SplatCount > 0 && ColorTextureSRV.IsValid(); }
+	bool IsValid() const { return bInitialized && SplatCount > 0 && (PackedSplatBufferSRV.IsValid() || ColorTextureSRV.IsValid()); }
 
 	/** Get number of splats */
 	int32 GetSplatCount() const { return SplatCount; }
@@ -41,11 +41,15 @@ public:
 	//~ End FRenderResource Interface
 
 public:
-	/** Position data buffer */
+	/** Packed splat data buffer (16 bytes/splat: RGBA + float16 pos + octahedral quat + log scale) */
+	FBufferRHIRef PackedSplatBuffer;
+	FShaderResourceViewRHIRef PackedSplatBufferSRV;
+
+	/** Position data buffer (legacy, unused when packed format is active) */
 	FBufferRHIRef PositionBuffer;
 	FShaderResourceViewRHIRef PositionBufferSRV;
 
-	/** Rotation + Scale data buffer */
+	/** Rotation + Scale data buffer (legacy, unused when packed format is active) */
 	FBufferRHIRef OtherDataBuffer;
 	FShaderResourceViewRHIRef OtherDataBufferSRV;
 
@@ -315,7 +319,10 @@ private:
 	void CreateClusterBuffers(FRHICommandListBase& RHICmdList);
 
 private:
-	/** Cached asset data for initialization */
+	/** Cached packed splat data (16 bytes/splat, built during Initialize) */
+	TArray<uint8> CachedPackedSplatData;
+
+	/** Cached asset data for initialization (legacy, unused when packed) */
 	TArray<uint8> CachedPositionData;
 	TArray<uint8> CachedOtherData;
 	TArray<uint8> CachedSHData;
@@ -343,7 +350,6 @@ public:
 	FMatrix CachedLocalToWorld = FMatrix::Identity;
 	float CachedOpacityScale = -1.0f;
 	float CachedSplatScale = -1.0f;
-	bool CachedHasColorTexture = false;
 	float CachedErrorThreshold = -1.0f;
 	int32 CachedDebugMode = -1;
 	int32 CachedDebugForceLODLevel = -1;

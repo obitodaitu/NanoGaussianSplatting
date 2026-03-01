@@ -20,12 +20,8 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCalcViewDataCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, PositionBuffer)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, OtherDataBuffer)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, SHBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianChunkInfo>, ChunkBuffer)
-		SHADER_PARAMETER_SRV(Texture2D, ColorTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, PackedSplatBuffer)  // 16 bytes/splat packed data
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, SHBuffer)           // SH data (currently unused)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
 		// Cluster visibility integration (UNIFIED APPROACH)
 		// SplatClusterIndexBuffer maps ALL splats to their cluster (original->leaf, LOD->parent)
@@ -51,14 +47,12 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, SHOrder)
 		SHADER_PARAMETER(float, OpacityScale)
 		SHADER_PARAMETER(float, SplatScale)
-		SHADER_PARAMETER(FIntPoint, ColorTextureSize)
-		SHADER_PARAMETER(uint32, PositionFormat)
-		SHADER_PARAMETER(uint32, UseDefaultColor)  // 1 = use default color (no texture), 0 = use texture
 		SHADER_PARAMETER(uint32, GlobalBaseOffset)  // Offset into global ViewDataBuffer (non-compaction global path)
 		// Global compaction path: GPU prefix-sum offsets
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, GlobalBaseOffsetsBuffer)  // prefix sums per proxy
 		SHADER_PARAMETER(uint32, ProxyIndex)               // which proxy index this dispatch belongs to
 		SHADER_PARAMETER(uint32, UseGlobalCompactionPath)  // 1 = read base from GlobalBaseOffsetsBuffer[ProxyIndex]
+		SHADER_PARAMETER(uint32, MaxRenderBudget)          // Budget cap: skip writes at indices >= this value (0 = no cap)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -465,6 +459,7 @@ class FPrefixSumVisibleCountsCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalSortParams)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalDrawIndirectArgs)
 		SHADER_PARAMETER(uint32, ProxyCount)
+		SHADER_PARAMETER(uint32, MaxRenderBudget)  // Budget cap: clamp total visible to this value (0 = no cap)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

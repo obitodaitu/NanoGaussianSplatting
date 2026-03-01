@@ -51,6 +51,19 @@ TAutoConsoleVariable<int32> CVarUseGlobalAccumulator(
 	TEXT(" 0: Legacy per-proxy rendering (N sorts + N draws, kept for debugging/regression)"),
 	ECVF_RenderThreadSafe);
 
+/** Maximum number of splats the global accumulator will allocate working buffers for.
+ *  Caps VRAM usage for ViewData/sort/histogram buffers. If total visible splats exceed
+ *  this budget (after Nanite LOD compaction), excess splats are simply not rendered.
+ *  Default 3M. At 3M: working buffers ≈ 195 MB vs ≈ 2,131 MB at 27.3M uncapped. */
+TAutoConsoleVariable<int32> CVarMaxRenderBudget(
+	TEXT("gs.MaxRenderBudget"),
+	3000000,
+	TEXT("Maximum number of splats to render per frame (render budget).\n")
+	TEXT("Caps global accumulator buffer allocation and GPU-side visible count.\n")
+	TEXT("Lower values reduce VRAM for working buffers.\n")
+	TEXT("Default: 3000000 (3M). Set to 0 to disable budget cap."),
+	ECVF_RenderThreadSafe);
+
 /** Debug: Force a specific LOD level for debugging LOD hierarchy */
 TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("gs.DebugForceLODLevel"),
@@ -249,13 +262,17 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 		FGaussianGlobalAccumulator* RawAccumulator = GlobalAccumulator.Get();
 
+		// Read render budget for global accumulator buffer cap
+		int32 BudgetVal = CVarMaxRenderBudget.GetValueOnRenderThread();
+		uint32 MaxRenderBudget = (BudgetVal > 0) ? (uint32)BudgetVal : 0;
+
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("GaussianSplatRendering_Global"),
 			PassParameters,
 			ERDGPassFlags::Raster,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
 			 SharedIndexBuffer, CurrentVP, CurrentErrorThreshold, CurrentDebugMode,
-			 CurrentDebugForceLODLevel, DebugMode](FRHICommandListImmediate& RHICmdList)
+			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget](FRHICommandListImmediate& RHICmdList)
 			{
 				if (!SceneView) return;
 				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering_Global);
@@ -319,7 +336,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 						// Single 1-thread dispatch: computes prefix sums + writes all indirect args
 						FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
-							RHICmdList, RawAccumulator, NumProxies);
+							RHICmdList, RawAccumulator, NumProxies, MaxRenderBudget);
 
 						// --------------------------------------------------
 						// Phase 2: Per-proxy CalcViewData → global buffer
@@ -331,7 +348,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
 							int32 SplatCount = Info.Proxy->GetSplatCount();
 							int32 OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
-							bool bHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
 
 							FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 								RHICmdList, *SceneView, GPUResources,
@@ -341,9 +357,9 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 								Info.Proxy->GetSHOrder(),
 								Info.Proxy->GetOpacityScale(),
 								Info.Proxy->GetSplatScale(),
-								bHasColorTexture,
 								i,
-								RawAccumulator);
+								RawAccumulator,
+								MaxRenderBudget);
 						}
 
 						// --------------------------------------------------
@@ -365,7 +381,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							GPUResources->CachedLocalToWorld = Info.LocalToWorld;
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
 							GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
-							GPUResources->CachedHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
+
 							GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
 							GPUResources->CachedDebugMode = CurrentDebugMode;
 							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
@@ -386,6 +402,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					// Still provides correct cross-tile alpha blending.
 					//==================================================
 
+					// Cap TotalSplatCount to render budget (CPU-side enforcement)
+					uint32 CappedTotalSplatCount = TotalSplatCount;
+					if (MaxRenderBudget > 0 && CappedTotalSplatCount > MaxRenderBudget)
+					{
+						CappedTotalSplatCount = MaxRenderBudget;
+					}
+
 					if (!bCanSkip)
 					{
 						// --------------------------------------------------
@@ -393,8 +416,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						// --------------------------------------------------
 						for (const auto& Info : VisibleProxies)
 						{
+							// Skip proxies that would write beyond the render budget
+							if (MaxRenderBudget > 0 && Info.GlobalBaseOffset >= MaxRenderBudget)
+							{
+								break;  // All subsequent proxies also exceed the budget
+							}
+
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
-							bool bHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
 
 							// Cluster culling for Nanite-enabled proxies
 							if (GPUResources->bEnableNanite && GPUResources->bHasClusterData)
@@ -412,7 +440,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 								Info.Proxy->GetSHOrder(),
 								Info.Proxy->GetOpacityScale(),
 								Info.Proxy->GetSplatScale(),
-								bHasColorTexture,
 								Info.bUseLODRendering,
 								Info.GlobalBaseOffset,
 								RawAccumulator);
@@ -421,8 +448,8 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						// --------------------------------------------------
 						// Phase 2: Single global CalcDistances + RadixSort
 						// --------------------------------------------------
-						FGaussianSplatRenderer::DispatchCalcDistancesGlobal(RHICmdList, RawAccumulator, (int32)TotalSplatCount);
-						FGaussianSplatRenderer::DispatchRadixSortGlobal(RHICmdList, RawAccumulator, (int32)TotalSplatCount);
+						FGaussianSplatRenderer::DispatchCalcDistancesGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
+						FGaussianSplatRenderer::DispatchRadixSortGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
 
 						// Update caches
 						RawAccumulator->bHasCachedSortData = true;
@@ -436,7 +463,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							GPUResources->CachedLocalToWorld = Info.LocalToWorld;
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
 							GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
-							GPUResources->CachedHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
+
 							GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
 							GPUResources->CachedDebugMode = CurrentDebugMode;
 							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
@@ -444,10 +471,10 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						}
 					}
 
-					// Single draw call for ALL proxies
+					// Single draw call for ALL proxies (capped to render budget)
 					FGaussianSplatRenderer::DrawSplatsGlobal(
 						RHICmdList, *SceneView, RawAccumulator,
-						SharedIndexBuffer, (int32)TotalSplatCount, DebugMode);
+						SharedIndexBuffer, (int32)CappedTotalSplatCount, DebugMode);
 				}
 			}
 		);
@@ -476,6 +503,10 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 					FGaussianSplatGPUResources* GPUResources = Proxy->GetGPUResources();
 					if (!GPUResources || !GPUResources->IsValid()) continue;
+
+					// Per-proxy path requires dynamic buffers (ViewData, sort).
+					// These may be absent if proxy was created while gs.UseGlobalAccumulator=1.
+					if (!GPUResources->ViewDataBuffer.IsValid()) continue;
 
 					const FBoxSphereBounds& Bounds = Proxy->GetBounds();
 					if (!SceneView->ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent)) continue;

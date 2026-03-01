@@ -49,7 +49,6 @@ public:
 		int32 SHOrder,
 		float OpacityScale,
 		float SplatScale,
-		bool bHasColorTexture = true,
 		bool bUseLODRendering = false
 	);
 
@@ -147,8 +146,7 @@ public:
 		int32 OriginalSplatCount,
 		int32 SHOrder,
 		float OpacityScale,
-		float SplatScale,
-		bool bHasColorTexture
+		float SplatScale
 	);
 
 	/**
@@ -177,7 +175,6 @@ public:
 		int32 SHOrder,
 		float OpacityScale,
 		float SplatScale,
-		bool bHasColorTexture,
 		bool bUseLODRendering,
 		uint32 GlobalBaseOffset,
 		FGaussianGlobalAccumulator* GlobalAccumulator
@@ -242,7 +239,8 @@ public:
 	static void DispatchPrefixSumVisibleCounts(
 		FRHICommandListImmediate& RHICmdList,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		int32 ProxyCount
+		int32 ProxyCount,
+		uint32 MaxRenderBudget
 	);
 
 	/**
@@ -260,9 +258,9 @@ public:
 		int32 SHOrder,
 		float OpacityScale,
 		float SplatScale,
-		bool bHasColorTexture,
 		int32 ProxyIndex,
-		FGaussianGlobalAccumulator* GlobalAccumulator
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		uint32 MaxRenderBudget
 	);
 
 	/**

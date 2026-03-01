@@ -1,0 +1,936 @@
+ ---
+  Why Spark Uses 15× Less VRAM
+
+  The core problem: your per-splat size
+
+  Your UE plugin (uncompressed float32):
+
+  ┌────────────────────────────┬──────────────────────────┐
+  │           Field            │         Storage          │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Position (xyz)             │ 3 × float32 = 12 bytes   │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Rotation (quat)            │ 4 × float32 = 16 bytes   │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Scale (xyz)                │ 3 × float32 = 12 bytes   │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Opacity                    │ 1 × float32 = 4 bytes    │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Base color f_dc (3ch)      │ 3 × float32 = 12 bytes   │
+  ├────────────────────────────┼──────────────────────────┤
+  │ SH rest f_rest (45 coeffs) │ 45 × float32 = 180 bytes │
+  ├────────────────────────────┼──────────────────────────┤
+  │ Total                      │ 236 bytes/splat          │
+  └────────────────────────────┴──────────────────────────┘
+
+  Spark PackedSplats format:
+
+  ┌───────────────────────────────┬───────────────────────────────┐
+  │             Field             │            Storage            │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ RGBA (color + opacity)        │ 4 × uint8 = 4 bytes           │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ Center XY                     │ 2 × float16 = 4 bytes         │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ Center Z + Quat XY            │ float16 + 2 × uint8 = 4 bytes │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ Scale XYZ + Quat Z            │ 3 × uint8 + uint8 = 4 bytes   │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ Base total                    │ 16 bytes/splat                │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ + SH3 (21 coeffs, 6-bit each) │ 4 × uint32 = 16 bytes         │
+  ├───────────────────────────────┼───────────────────────────────┤
+  │ With SH3                      │ 32 bytes/splat                │
+  └───────────────────────────────┴───────────────────────────────┘
+
+  That's a 7.4× compression ratio per splat. Spark also evaluates SH on GPU so DC color is baked into the 4-byte RGBA
+  when SH isn't needed.
+
+  Your actual numbers
+
+  - 38 proxies × 719K splats = 27.3M splats
+  - Current: 27.3M × 236 bytes = 6.44 GB just for raw splat data (before working buffers!)
+  - Spark equivalent: 27.3M × 32 bytes = 875 MB
+
+  The working buffers (sort, viewdata, cluster data) add another ~300–600 MB on top, explaining your 7.4 GB total.
+
+  What Spark compresses
+
+  Position: float32 → float16
+  - 12 bytes → 6 bytes, acceptable precision loss for cm-scale objects
+
+  Rotation: 4 floats → 3 uint8 (folded octahedral mapping)
+  - 16 bytes → 3 bytes using axis-angle + octahedral projection
+  - Encodes angle in [0,π] as one uint8, axis in folded-octahedral as two uint8s
+
+  Scale: 3 floats → 3 uint8 (log encoding)
+  - 12 bytes → 3 bytes, log-quantized over range e^-12 to e^9
+
+  SH higher-order bands: float32 → 6-bit / 7-bit / 8-bit
+  - SH1: 9 coefficients × 7 bits = 63 bits = 2 uint32 (8 bytes)
+  - SH2: 15 coefficients × 8 bits = 120 bits = 4 uint32 (16 bytes)
+  - SH3: 21 coefficients × 6 bits packed = 4 uint32 (16 bytes)
+  - vs your current: 45 floats = 180 bytes
+
+
+================================================================================
+ FULL VRAM AUDIT (38 proxies × 719K splats = 27.3M splats)
+================================================================================
+
+ Every single GPU buffer allocation, measured and categorized:
+
+ PER-PROXY STATIC BUFFERS (uploaded once, ×38 proxies)
+ ─────────────────────────────────────────────────────────
+  Buffer               │ Per-Proxy     │ ×38 Total
+ ─────────────────────┼───────────────┼──────────────
+  PositionBuffer       │ 719K×12 =8.6MB │   328 MB
+  OtherDataBuffer      │ 719K×28=20.1MB │   765 MB
+  ColorTexture         │ 2048×352×8=5.8MB│  219 MB    (float16 RGBA texture)
+  SHBuffer             │ 719K×90=64.7MB │ 2,459 MB   ← SH EVAL IS DISABLED!
+  ChunkBuffer          │ 2815×72=0.2MB  │     8 MB
+ ─────────────────────┼───────────────┼──────────────
+  Subtotal static      │ 99.4 MB       │ 3,779 MB
+
+ PER-PROXY DYNAMIC BUFFERS (per-frame, ×38 proxies)
+ (PaddedCount = 1,048,576 = next power of 2 above 719K)
+ ─────────────────────────────────────────────────────────
+  Buffer               │ Per-Proxy     │ ×38 Total
+ ─────────────────────┼───────────────┼──────────────
+  ViewDataBuffer       │ 719K×48=34.5MB │ 1,311 MB
+  SortDistance ×2      │ 1M×4×2= 8.0MB │   304 MB    (ping-pong pair)
+  SortKeys ×2          │ 1M×4×2= 8.0MB │   304 MB    (ping-pong pair)
+  RadixHistogram       │ 1024×256×4=1MB │    38 MB
+  Other small buffers  │ <1 KB          │    <1 MB
+ ─────────────────────┼───────────────┼──────────────
+  Subtotal dynamic     │ 49.4 MB       │ 1,877 MB   ← ALL WASTED (global accum)
+
+ PER-PROXY CLUSTER BUFFERS (Nanite, ×38 proxies)
+ ─────────────────────────────────────────────────────────
+  Buffer               │ Per-Proxy     │ ×38 Total
+ ─────────────────────┼───────────────┼──────────────
+  ClusterBuffer        │ ~6K×80=0.5MB  │    19 MB
+  SplatClusterIndex    │ 719K×4= 2.9MB │   110 MB
+  CompactedIndices     │ 719K×4= 2.9MB │   110 MB
+  Other cluster bufs   │ <0.1 MB       │     4 MB
+ ─────────────────────┼───────────────┼──────────────
+  Subtotal cluster     │ 6.4 MB        │   243 MB
+
+ GLOBAL ACCUMULATOR BUFFERS (shared, ×1)
+ (AllocatedCount = 27.3M + 20% headroom = 32.8M, NumTiles = 32,018)
+ ─────────────────────────────────────────────────────────
+  Buffer                    │ Size
+ ──────────────────────────┼──────────────
+  GlobalViewDataBuffer      │ 32.8M×48 = 1,574 MB
+  GlobalSortDistance ×2     │ 32.8M×4×2=  262 MB
+  GlobalSortKeys ×2         │ 32.8M×4×2=  262 MB
+  GlobalRadixHistogram      │ 32K×256×4=   33 MB
+  Other small buffers       │             <1 MB
+ ──────────────────────────┼──────────────
+  Subtotal global           │           2,131 MB
+
+ ═══════════════════════════════════════════════════════════
+  GRAND TOTAL                              ~8,030 MB
+ ═══════════════════════════════════════════════════════════
+
+ THE 4 VRAM KILLERS (ranked by size):
+   #1  SH buffers (never used):             2,459 MB  (30.6%)
+   #2  Global accumulator (oversized):      2,131 MB  (26.5%)
+   #3  Per-proxy dynamic (wasted duplicate): 1,877 MB  (23.4%)
+   #4  Static data (uncompressed):          1,312 MB  (16.3%)
+       (Position 328 + Other 765 + Color 219)
+
+ How Spark handles 40M splats in ~2 GB:
+   - Packed storage: 40M × 16 = 640 MB (for all stored splats)
+   - LOD budget: only ~2.5M splats rendered at a time (not all 40M!)
+   - Working buffers sized to budget: ~2.5M × ~32 = ~80 MB (not 40M)
+   - CPU sort in WebWorker: no GPU sort buffers at all
+   - No duplicate buffers: single rendering path
+   - Total: ~640 + ~80 + render targets ≈ ~800 MB + browser overhead
+
+
+================================================================================
+ IMPLEMENTATION PLAN: 4 Optimizations (7.7 GB → ~0.9 GB)
+================================================================================
+
+ OVERVIEW
+ --------
+ Four optimizations, ordered by VRAM-saved / effort ratio:
+
+   Opt 1: Stop uploading SH to GPU       → saves 2,459 MB  (trivial)
+   Opt 2: Skip per-proxy dynamic buffers  → saves 1,877 MB  (easy)
+   Opt 3: Size global accum to LOD budget → saves ~1,762 MB  (medium)
+   Opt 4: Pack static data to 16 bytes    → saves   771 MB  (major)
+                                            ─────────────────
+   Total savings:                                 ~6,869 MB
+   Remaining VRAM:                                  ~860 MB
+
+
+================================================================================
+ OPTIMIZATION 1: Stop Uploading SH Buffers (saves 2,459 MB)
+================================================================================
+
+ PROBLEM
+ -------
+ SHBands defaults to 3 (GaussianSplatAsset.h:135), so CompressSH() writes
+ 90 bytes/splat of Float16 SH data into SHBulkData for every imported asset.
+ The scene proxy uploads this to GPU in CreateStaticBuffers().
+ But SH evaluation is DISABLED: CalcViewData.usf has "if (false && SHOrder > 0)".
+ Result: 38 × 719K × 90 = 2,459 MB of GPU memory allocated and never read.
+
+ FIX
+ ---
+ In GaussianSplatSceneProxy.cpp, CreateStaticBuffers():
+   Before creating SHBuffer, check if SH will actually be used on GPU.
+   If SHOrder == 0 or SH eval is disabled, skip SH buffer creation entirely.
+
+   // Current code (line ~283):
+   if (CachedSHData.Num() > 0)
+   {
+       // creates SHBuffer...
+   }
+
+   // New code:
+   bool bSHEvalEnabled = false;  // TODO: link to actual CVar or SH eval flag
+   if (CachedSHData.Num() > 0 && bSHEvalEnabled)
+   {
+       // creates SHBuffer...
+   }
+
+ Optionally, also skip CompressSH() during import to save disk space:
+   In GaussianSplatAsset.cpp, InitializeFromSplatData():
+   Set SHBands = 0 by default. Only set SHBands = 3 if a "store SH" option is
+   enabled in import settings. This prevents 90 bytes/splat from being serialized.
+
+ FILES
+ ─────
+ GaussianSplatSceneProxy.cpp  - Skip SH buffer creation when SH eval disabled
+ GaussianSplatAsset.h         - Change SHBands default from 3 to 0
+ GaussianSplatAsset.cpp       - Optionally skip CompressSH() based on import setting
+
+ VRAM SAVED: 2,459 MB (for 38×719K splats)
+ EFFORT: Trivial (~10 lines of code)
+
+
+================================================================================
+ OPTIMIZATION 2: Skip Per-Proxy Dynamic Buffers (saves 1,877 MB)
+================================================================================
+
+ PROBLEM
+ -------
+ When gs.UseGlobalAccumulator=1 (default), the global accumulator owns all
+ working buffers (ViewData, sort, histogram). Per-proxy CalcViewData writes
+ directly into the GlobalViewDataBuffer at [GlobalBaseOffset + threadIndex].
+
+ But FGaussianSplatGPUResources::InitRHI() (GaussianSplatSceneProxy.cpp:132)
+ calls CreateDynamicBuffers() UNCONDITIONALLY. There is no check for the
+ global accumulator CVar. Every proxy allocates:
+   ViewDataBuffer:      719K × 48 = 34.5 MB
+   SortDistance ×2:     1M × 4 × 2 = 8 MB
+   SortKeys ×2:         1M × 4 × 2 = 8 MB
+   RadixHistogram:      1M = 1 MB
+   Total:               ~49.4 MB per proxy
+
+ 38 proxies × 49.4 MB = 1,877 MB of buffers that are NEVER READ OR WRITTEN.
+
+ FIX
+ ---
+ Option A (simple): Check the CVar at buffer creation time.
+
+   In GaussianSplatSceneProxy.cpp, InitRHI():
+     static IConsoleVariable* CVarUseGlobalAccum =
+         IConsoleManager::Get().FindConsoleVariable(TEXT("gs.UseGlobalAccumulator"));
+     bool bUseGlobalAccum = CVarUseGlobalAccum && CVarUseGlobalAccum->GetInt() != 0;
+
+     CreateStaticBuffers(RHICmdList);
+     if (!bUseGlobalAccum)
+     {
+         CreateDynamicBuffers(RHICmdList);  // Only for per-proxy rendering path
+     }
+     CreateIndexBuffer(RHICmdList);
+     CreateClusterBuffers(RHICmdList);
+
+ Option B (robust): Lazy allocation — only create dynamic buffers on first use.
+   Add a flag bDynamicBuffersCreated. In the per-proxy rendering path (fallback),
+   create them on demand. This handles CVar changes at runtime.
+
+ ALSO: The per-proxy compaction buffers (CompactedSplatIndicesBuffer = 719K×4,
+ VisibleSplatCountBuffer, IndirectDispatchArgsBuffer) are cluster-path buffers.
+ These ARE still needed per-proxy even with global accumulator (for compaction
+ phase). Keep those. Only skip the sort + ViewData buffers.
+
+ Specifically skip these buffers when global accumulator is active:
+   - ViewDataBuffer + UAV + SRV         (34.5 MB)
+   - SortDistanceBuffer + UAV + SRV     (4 MB)
+   - SortKeysBuffer + UAV + SRV         (4 MB)
+   - SortKeysBufferAlt + UAV + SRV      (4 MB)
+   - SortDistanceBufferAlt + UAV        (4 MB)
+   - RadixHistogramBuffer + UAV         (1 MB)
+   - RadixDigitOffsetBuffer + UAV       (<1 KB)
+   - SortIndirectArgsBuffer             (<1 KB)
+   - SortParamsBuffer + UAV + SRV       (<1 KB)
+
+ FILES
+ ─────
+ GaussianSplatSceneProxy.cpp  - Conditionally skip CreateDynamicBuffers()
+ GaussianSplatSceneProxy.h    - Add bDynamicBuffersCreated flag (for lazy alloc)
+
+ VRAM SAVED: 1,877 MB (for 38 proxies)
+ EFFORT: Easy (~20 lines of code)
+
+
+================================================================================
+ OPTIMIZATION 3: Size Global Accumulator to LOD Budget (saves ~1,762 MB)
+================================================================================
+
+ PROBLEM
+ -------
+ The global accumulator in FGaussianGlobalAccumulator::ResizeIfNeeded()
+ allocates buffers for ALL splats across ALL proxies + 20% headroom:
+   AllocatedCount = 27.3M × 1.2 = 32.8M
+
+ This means:
+   GlobalViewDataBuffer:  32.8M × 48 = 1,574 MB
+   GlobalSortDistance×2:  32.8M × 4 × 2 = 262 MB
+   GlobalSortKeys×2:      32.8M × 4 × 2 = 262 MB
+   GlobalRadixHistogram:  32K tiles × 256 × 4 = 33 MB
+   Total:                 2,131 MB
+
+ But with Nanite compaction, only a fraction of splats are actually visible.
+ At LOD level 5 (from MEMORY.md), only ~5K splats per proxy are visible.
+ Even at LOD 0 (full detail), frustum culling reduces visible count
+ significantly. The indirect radix sort already dispatches only for visible
+ splats, but the BUFFER ALLOCATION is still for the full 32.8M.
+
+ SparkJS solves this by having a fixed "LOD budget" (default 2.5M on desktop).
+ Working buffers are sized to the budget, not total splat count.
+
+ FIX
+ ---
+ Introduce a maximum "render budget" that caps global buffer allocation.
+
+ New CVar: gs.MaxRenderBudget (default = 3,000,000)
+   This caps the global accumulator buffer sizes.
+   If the actual visible count exceeds this budget after compaction,
+   the excess splats are simply not rendered (same as SparkJS's approach).
+
+ In FGaussianGlobalAccumulator::ResizeIfNeeded():
+   // Current:
+   uint32 NewAllocatedCount = TotalSplatCount * 1.2;
+
+   // New:
+   static IConsoleVariable* CVarBudget =
+       IConsoleManager::Get().FindConsoleVariable(TEXT("gs.MaxRenderBudget"));
+   uint32 MaxBudget = CVarBudget ? CVarBudget->GetInt() : 3000000;
+   uint32 NewAllocatedCount = FMath::Min(TotalSplatCount, MaxBudget);
+   // No need for 20% headroom if capped to budget
+
+ Budget enforcement:
+   In the global compaction path (PrefixSumVisibleCounts), after computing
+   the total visible count, clamp it to MaxBudget. The CalcViewData and
+   sort dispatches will then only process up to MaxBudget splats.
+
+   In PrepareIndirectArgs or PrefixSumVisibleCounts shader:
+     uint totalVisible = GlobalBaseOffsetsBuffer[NumProxies];
+     totalVisible = min(totalVisible, MaxRenderBudget);
+     // Write clamped count to GlobalSortParams
+
+ Buffer sizes at 3M budget:
+   GlobalViewDataBuffer:  3M × 48 = 144 MB
+   GlobalSortDistance×2:  3M × 4 × 2 = 24 MB
+   GlobalSortKeys×2:      3M × 4 × 2 = 24 MB
+   GlobalRadixHistogram:  ~3K tiles × 256 × 4 = 3 MB
+   Total:                 195 MB (vs 2,131 MB)
+
+ NOTE: The per-proxy static buffers (PackedSplatBuffer) still hold ALL splats,
+ since any splat might become visible when the camera moves. Only the working
+ buffers are budget-capped. This matches SparkJS's architecture where
+ PackedSplats stores all 40M splats but working buffers hold only 2.5M.
+
+ FILES
+ ─────
+ GaussianGlobalAccumulator.h    - Add MaxRenderBudget parameter
+ GaussianGlobalAccumulator.cpp  - Cap AllocatedCount to budget in ResizeIfNeeded()
+ GaussianSplatting.cpp          - Add gs.MaxRenderBudget CVar
+ GlobalAccumulatorPrefixSum.usf - Clamp total visible count to budget
+   (or PrepareIndirectArgs shader, wherever total visible → sort params)
+
+ VRAM SAVED: ~1,936 MB (2,131 → 195 MB)
+ EFFORT: Medium (~50 lines C++ + ~5 lines shader)
+
+
+================================================================================
+ OPTIMIZATION 4: Pack Static Data to 16 Bytes/Splat (saves 771 MB)
+================================================================================
+
+ PROBLEM
+ -------
+ Current static per-splat (excluding SH):
+   PositionBuffer:  12 bytes (3 × float32)
+   OtherDataBuffer: 28 bytes (4 × float32 quat + 3 × float32 scale)
+   ColorTexture:     8 bytes (4 × float16)
+   Total:           48 bytes/splat → 38 × 719K × 48 = 1,312 MB
+
+ Target: 16 bytes/splat → 38 × 719K × 16 = 437 MB
+ Savings: 875 MB
+
+ FIX
+ ---
+ Replace 3 separate buffers + 1 texture with single PackedSplatBuffer.
+ See "PACKED SPLAT BUFFER: BYTE LAYOUT" section below for exact format.
+
+ FILES (see detailed file list in FILES TO MODIFY section below)
+ ─────
+ GaussianDataTypes.h, GaussianSplatAsset.h/.cpp, GaussianSplatSceneProxy.h/.cpp,
+ GaussianSplatting.ush, CalcViewData.usf, GaussianDataTypes.ush,
+ GaussianSplatViewExtension*.cpp
+
+ VRAM SAVED: 875 MB (for 38×719K splats)
+ EFFORT: Major (data pipeline rewrite, shader rewrite, asset version bump)
+
+
+================================================================================
+ COMBINED RESULT
+================================================================================
+
+ Before:  ~8,030 MB (matches observed 7.4 GB + UE engine overhead)
+
+ After all 4 optimizations:
+   Static:  38 × 719K × 16 = 437 MB  (packed, no SH)
+   Cluster: 38 × 6.4 MB    = 243 MB  (unchanged)
+   Global:  3M budget       = 195 MB  (budget-capped)
+   Per-proxy dynamic:         0 MB    (skipped under global accum)
+   ────────────────────────────────────
+   Total:                   ~875 MB
+
+ That's ~32 bytes/splat all-in for 27.3M splats.
+ Comparable to SparkJS's ~50 bytes/splat for 40M at ~2 GB.
+
+
+================================================================================
+ PACKED SPLAT BUFFER: BYTE LAYOUT (16 bytes = 4 × uint32)
+================================================================================
+
+ word0 (bytes 0-3):   R | G | B | A
+   bits  0-7:   Red   (uint8, sRGB, 0-255 → 0.0-1.0)
+   bits  8-15:  Green (uint8, sRGB, 0-255 → 0.0-1.0)
+   bits 16-23:  Blue  (uint8, sRGB, 0-255 → 0.0-1.0)
+   bits 24-31:  Alpha (uint8, linear opacity, 0-255 → 0.0-1.0)
+
+ word1 (bytes 4-7):   Position X | Position Y
+   bits  0-15:  Position X (float16, IEEE half-precision)
+   bits 16-31:  Position Y (float16, IEEE half-precision)
+
+ word2 (bytes 8-11):  Position Z | Quat Axis U | Quat Axis V
+   bits  0-15:  Position Z (float16, IEEE half-precision)
+   bits 16-23:  Quaternion octahedral U (uint8)
+   bits 24-31:  Quaternion octahedral V (uint8)
+
+ word3 (bytes 12-15): Scale X | Scale Y | Scale Z | Quat Angle
+   bits  0-7:   Scale X (uint8, log-encoded)
+   bits  8-15:  Scale Y (uint8, log-encoded)
+   bits 16-23:  Scale Z (uint8, log-encoded)
+   bits 24-31:  Quaternion rotation angle (uint8, 0-255 → 0-pi)
+
+ NOTE: This is EXACTLY the SparkJS PackedSplats layout. Matching it means we can
+ directly reference SparkJS's well-tested encode/decode implementations.
+
+
+================================================================================
+ DATA MAPPING: CRITICAL PATH (Where bugs typically happen)
+================================================================================
+
+ The data flows through 3 stages. Each stage must preserve the correct mapping.
+
+ STAGE 1: PLY File → FGaussianSplatData (PLYFileReader.cpp - NO CHANGES)
+ ──────────────────────────────────────────────────────────────────────────
+ This stage is already correct and MUST NOT be modified.
+
+   PLY Position (X,Y,Z) right-hand Y-up
+     → UE Position (Z×100, -X×100, Y×100) left-hand Z-up centimeters
+     Stored in: FGaussianSplatData.Position (FVector3f)
+
+   PLY Quaternion (QW,QX,QY,QZ) right-hand
+     → UE Quaternion (W=QW, X=-QZ, Y=QX, Z=-QY) left-hand
+     Stored in: FGaussianSplatData.Rotation (FQuat4f with X,Y,Z,W members)
+
+   PLY Scale (SX,SY,SZ) log-space meters
+     → UE Scale (exp(SZ)×100, exp(SX)×100, exp(SY)×100) linear centimeters
+     Stored in: FGaussianSplatData.Scale (FVector3f)
+
+   PLY SH DC (f_dc_0, f_dc_1, f_dc_2)
+     Stored in: FGaussianSplatData.SH_DC (FVector3f, raw SH coefficients)
+
+   PLY Opacity (raw logit)
+     → Linear opacity via sigmoid(raw)
+     Stored in: FGaussianSplatData.Opacity (float, range [0,1])
+
+   PLY SH Rest: PLANAR layout (f_rest_0..14=R, 15..29=G, 30..44=B)
+     → Interleaved: SH[c] = FVector3f(R_c, G_c, B_c) for c=0..14
+     Stored in: FGaussianSplatData.SH[15] (FVector3f array)
+
+
+ STAGE 2: FGaussianSplatData → PackedSplatBulkData (GaussianSplatAsset.cpp - NEW)
+ ──────────────────────────────────────────────────────────────────────────────────
+ This is the NEW packing stage. This is where encoding happens.
+
+   Position (FVector3f, UE centimeters) → 3 × float16
+     MAPPING: Position.X → word1 bits 0-15  (packHalf)
+              Position.Y → word1 bits 16-31 (packHalf)
+              Position.Z → word2 bits 0-15  (packHalf)
+     RANGE:   float16 covers ±65504 cm = ±655 meters from origin
+     WARNING: If scene exceeds this range, positions will be clipped.
+              We will log a warning during import if any position exceeds ±60000 cm.
+
+   Rotation (FQuat4f with X,Y,Z,W) → 3 × uint8 (octahedral axis-angle)
+     STEP 1: Normalize quaternion
+     STEP 2: If W < 0, negate all components (ensure W >= 0 so theta ∈ [0,π])
+     STEP 3: theta = 2 × acos(W)
+     STEP 4: axis = normalize(X, Y, Z)  (if |XYZ| < epsilon, axis = (1,0,0))
+     STEP 5: Octahedral projection of axis:
+               p = axis / (|axis.x| + |axis.y| + |axis.z|)
+               if axis.z < 0: fold lower hemisphere
+                 p.x = (1 - |p.y|) × sign(p.x)
+                 p.y = (1 - |p.x|) × sign(p.y)  [use ORIGINAL p.x before modification]
+               u = p.x × 0.5 + 0.5
+               v = p.y × 0.5 + 0.5
+     STEP 6: Quantize:
+               quatU     = round(u × 255)        → word2 bits 16-23
+               quatV     = round(v × 255)        → word2 bits 24-31
+               quatAngle = round(theta/π × 255)  → word3 bits 24-31
+     CRITICAL: The quaternion components here are UE convention (X,Y,Z,W).
+               The axis-angle decomposition uses X,Y,Z for the axis and W for cos(theta/2).
+               DO NOT swap or reorder components.
+
+   Scale (FVector3f, UE centimeters, linear) → 3 × uint8 (log-encoded)
+     CONSTANTS: LN_SCALE_MIN = -8.0   (covers ~0.0003 cm)
+                LN_SCALE_MAX =  14.0  (covers ~1.2 million cm = 12 km)
+                (Adjusted from SparkJS's -12..9 because our values are in cm not meters.
+                 SparkJS meters: e^-12 = 6e-6m, e^9 = 8103m
+                 Our centimeters: e^-8 = 3.4e-4cm, e^14 = 1.2e6cm
+                 This covers equivalent physical range.)
+     ENCODING: For each scale axis:
+               if scale < 1e-10: uScale = 0  (sentinel for truly zero / 2DGS)
+               else: uScale = clamp(round((ln(scale) - LN_SCALE_MIN) × 254/(LN_SCALE_MAX - LN_SCALE_MIN)) + 1, 1, 255)
+     MAPPING: Scale.X → word3 bits 0-7
+              Scale.Y → word3 bits 8-15
+              Scale.Z → word3 bits 16-23
+
+   Color (from SH_DC) + Opacity → 4 × uint8
+     ENCODING: color = SHDCToColor(SH_DC) = 0.5 + SH_C0 × SH_DC  (per channel)
+               Apply sRGB gamma: srgb = pow(clamp(color, 0, 1), 1/2.2) × 255
+               Alpha: round(clamp(Opacity, 0, 1) × 255)
+     MAPPING: R → word0 bits 0-7
+              G → word0 bits 8-15
+              B → word0 bits 16-23
+              A → word0 bits 24-31
+     NOTE: We convert to sRGB uint8 here because the shader will convert back
+           to linear with pow(color/255, 2.2). Current float16 texture stores
+           linear HDR values, but uint8 clamps to [0,1]. For most splats this
+           is fine. Values slightly above 1.0 will be clamped.
+
+
+ STAGE 3: PackedSplatBuffer → Shader (GaussianSplatting.ush - REWRITE)
+ ──────────────────────────────────────────────────────────────────────
+ The shader loads 4 uint32 per splat and decodes all fields.
+
+   Load: uint4 packed = PackedSplatBuffer.Load4(splatIndex × 16)
+
+   Decode Color:
+     float4 color;
+     color.r = pow((packed.x & 0xFF) / 255.0, 2.2);          // sRGB → linear
+     color.g = pow(((packed.x >> 8) & 0xFF) / 255.0, 2.2);
+     color.b = pow(((packed.x >> 16) & 0xFF) / 255.0, 2.2);
+     color.a = ((packed.x >> 24) & 0xFF) / 255.0;            // alpha is linear
+
+   Decode Position:
+     float3 pos;
+     pos.x = f16tof32(packed.y & 0xFFFF);
+     pos.y = f16tof32(packed.y >> 16);
+     pos.z = f16tof32(packed.z & 0xFFFF);
+
+   Decode Quaternion (octahedral → axis-angle → quaternion):
+     uint quatU = (packed.z >> 16) & 0xFF;
+     uint quatV = (packed.z >> 24) & 0xFF;
+     uint quatAngleInt = (packed.w >> 24) & 0xFF;
+
+     // Octahedral decode
+     float fx = (quatU / 255.0 - 0.5) × 2.0;  // [-1, 1]
+     float fy = (quatV / 255.0 - 0.5) × 2.0;
+     float fz = 1.0 - abs(fx) - abs(fy);
+     float t = max(-fz, 0.0);
+     fx += (fx >= 0) ? -t : t;
+     fy += (fy >= 0) ? -t : t;
+     float3 axis = normalize(float3(fx, fy, fz));
+
+     // Axis-angle → quaternion
+     float theta = (quatAngleInt / 255.0) × PI;
+     float halfTheta = theta × 0.5;
+     float sinHalf = sin(halfTheta);
+     float4 quat = float4(axis × sinHalf, cos(halfTheta));  // (X, Y, Z, W)
+
+   Decode Scale (log-encoded → linear):
+     CONSTANTS: LN_SCALE_MIN = -8.0, LN_SCALE_MAX = 14.0
+     float3 scale;
+     uint sx = packed.w & 0xFF;
+     uint sy = (packed.w >> 8) & 0xFF;
+     uint sz = (packed.w >> 16) & 0xFF;
+     scale.x = (sx == 0) ? 0.0 : exp(LN_SCALE_MIN + (sx - 1) × (LN_SCALE_MAX - LN_SCALE_MIN) / 254.0);
+     scale.y = (sy == 0) ? 0.0 : exp(LN_SCALE_MIN + (sy - 1) × (LN_SCALE_MAX - LN_SCALE_MIN) / 254.0);
+     scale.z = (sz == 0) ? 0.0 : exp(LN_SCALE_MIN + (sz - 1) × (LN_SCALE_MAX - LN_SCALE_MIN) / 254.0);
+
+
+================================================================================
+ SH COMPRESSION (Phase 2, lower priority since SH evaluation is currently disabled)
+================================================================================
+
+ Current: 15 coefficients × 3 channels × float16 = 90 bytes/splat (single buffer)
+ Target:  3 separate buffers by SH level, bit-packed:
+
+ SH1 Buffer (band 1: 3 coefficients × 3 channels = 9 values):
+   Encoding: signed 7-bit per value, range [-63, +63] maps to [-1, +1]
+   Packing:  9 × 7 = 63 bits → 2 × uint32 (bit 63 unused)
+   Storage:  8 bytes/splat
+
+ SH2 Buffer (band 2: 5 coefficients × 3 channels = 15 values):
+   Encoding: signed 8-bit per value, range [-127, +127] maps to [-1, +1]
+   Packing:  15 × 8 = 120 bits → 4 × uint32 (byte 15 = padding)
+   Storage:  16 bytes/splat
+
+ SH3 Buffer (band 3: 7 coefficients × 3 channels = 21 values):
+   Encoding: signed 6-bit per value, range [-31, +31] maps to [-1, +1]
+   Packing:  21 × 6 = 126 bits → 4 × uint32 (bits 126-127 unused)
+   Storage:  16 bytes/splat
+
+ Coefficient ordering (same as SparkJS): RGB-interleaved per basis function
+   [R0, G0, B0, R1, G1, B1, ...]
+   This matches how our FGaussianSplatData.SH[c] = FVector3f(R, G, B) is already stored.
+
+
+================================================================================
+ FILES TO MODIFY (all 4 optimizations)
+================================================================================
+
+ Opt 1: Stop Uploading SH Buffers
+ ─────────────────────────────────
+ 1. GaussianSplatAsset.h
+    - Change default: int32 SHBands = 3  →  int32 SHBands = 0
+
+ 2. GaussianSplatSceneProxy.cpp
+    - In CreateStaticBuffers(): guard SH buffer creation with SH-eval-enabled check
+      if (CachedSHData.Num() > 0 && bSHEvalEnabled) { ... }
+
+
+ Opt 2: Skip Per-Proxy Dynamic Buffers
+ ──────────────────────────────────────
+ 3. GaussianSplatSceneProxy.h
+    - Add: bool bDynamicBuffersCreated = false;
+
+ 4. GaussianSplatSceneProxy.cpp
+    - In InitRHI(): check gs.UseGlobalAccumulator CVar before calling
+      CreateDynamicBuffers(). If global accum is active, skip it.
+    - Add lazy-init path: if per-proxy rendering is ever triggered at runtime
+      (CVar changed), create dynamic buffers on demand.
+
+
+ Opt 3: Size Global Accumulator to LOD Budget
+ ─────────────────────────────────────────────
+ 5. GaussianSplatting.cpp
+    - Add CVar: gs.MaxRenderBudget (default 3000000)
+
+ 6. GaussianGlobalAccumulator.h
+    - Add MaxRenderBudget parameter to ResizeIfNeeded() or read CVar directly
+
+ 7. GaussianGlobalAccumulator.cpp
+    - In ResizeIfNeeded(): cap AllocatedCount to min(TotalSplatCount, MaxBudget)
+    - Remove 20% headroom when capped (budget IS the headroom)
+
+ 8. GlobalAccumulatorPrefixSum.usf (or wherever total visible → sort params)
+    - After computing total visible count from prefix sums, clamp to MaxRenderBudget
+    - Write clamped value to GlobalSortParams so sort + draw use capped count
+    - Add MaxRenderBudget as shader parameter
+
+
+ Opt 4: Pack Static Data to 16 Bytes/Splat
+ ──────────────────────────────────────────
+
+ 9. GaussianDataTypes.h
+    - Add constants: LN_SCALE_MIN, LN_SCALE_MAX, PACKED_SPLAT_STRIDE (16)
+    - Add encoding functions:
+      EncodeScaleUint8(float) → uint8
+      DecodeScaleUint8(uint8) → float
+      EncodeQuatOctahedral(FQuat4f) → (uint8 U, uint8 V, uint8 angle)
+      DecodeQuatOctahedral(uint8 U, uint8 V, uint8 angle) → FQuat4f
+      PackSplatToUint4(FGaussianSplatData) → uint32[4]
+      UnpackSplatFromUint4(uint32[4]) → position, rotation, scale, color
+
+ 10. GaussianSplatAsset.h
+     - Bump GAUSSIAN_SPLAT_ASSET_VERSION (breaking change, old assets need reimport)
+     - Replace PositionBulkData + OtherBulkData + ColorTextureBulkData
+       with single PackedSplatBulkData
+     - Remove ColorTexture, ColorTextureWidth, ColorTextureHeight members
+     - Remove PositionFormat, ColorFormat enums (always packed now)
+     - Add PackSplatData() replacing CompressPositions + CompressRotationScale
+       + CreateColorTextureData
+     - Update GetDecompressedPositions() to unpack from new format
+
+ 11. GaussianSplatAsset.cpp
+     - Implement PackSplatData(): iterate all splats, call PackSplatToUint4,
+       write to PackedSplatBulkData
+     - Remove CompressPositions(), CompressRotationScale(),
+       CreateColorTextureData(), CreateColorTextureFromData()
+     - Update Serialize(): read/write PackedSplatBulkData instead of 3 bulk datas
+     - Update PostLoad(): no need to recreate ColorTexture
+     - Update GetMemoryUsage(), GetDecompressedPositions()
+     - Add GetPackedSplatData() to return raw packed data for GPU upload
+
+ 12. GaussianSplatSceneProxy.h
+     - Replace PositionBuffer, OtherDataBuffer, SHBuffer, ChunkBuffer + SRVs
+       with single PackedSplatBuffer + PackedSplatBufferSRV
+     - Remove CachedPositionData, CachedOtherData → CachedPackedSplatData
+     - Remove ColorTextureSRV reference, PositionFormat member
+
+ 13. GaussianSplatSceneProxy.cpp
+     - Initialize(): Get packed data instead of separate position/other/color data
+     - CreateStaticBuffers(): Create single PackedSplatBuffer (ByteAddressBuffer)
+       instead of 3 separate buffers + texture
+     - Remove color texture initialization (TryInitializeColorTexture)
+
+ 14. GaussianSplatViewExtension*.cpp (shader parameter binding)
+     - Bind PackedSplatBuffer as ByteAddressBuffer parameter
+     - Remove PositionBuffer, OtherDataBuffer, ColorTexture, ColorSampler bindings
+     - Remove PositionFormat, ColorTextureSize, UseDefaultColor parameters
+
+ 15. GaussianSplatting.ush (shader include)
+     - Remove LoadPositionFloat32(), LoadPositionNorm16(), LoadRotation(),
+       LoadScale(), LoadColor()
+     - Add UnpackSplat() function that loads 4 uint32 and decodes all fields:
+       struct FUnpackedSplat { float3 Position; float4 Rotation; float3 Scale; float4 Color; };
+       FUnpackedSplat UnpackSplat(ByteAddressBuffer packedBuffer, uint splatIndex)
+     - Add helpers: DecodeOctahedral(), DecodeLogScale()
+
+ 16. CalcViewData.usf
+     - Replace separate buffer declarations with single PackedSplatBuffer
+     - Call UnpackSplat() instead of separate Load functions
+     - Remove PositionFormat switch, ColorTextureSize, UseDefaultColor parameters
+
+ 17. GaussianDataTypes.ush (HLSL types)
+     - No changes to FGaussianSplatViewData (output format unchanged)
+     - Add packed format constants (LN_SCALE_MIN, LN_SCALE_MAX, PI)
+
+ Files NOT modified:
+   PLYFileReader.cpp        - NO CHANGES (produces FGaussianSplatData, the clean intermediate)
+   GaussianSplatAssetFactory.cpp - NO CHANGES (calls InitializeFromSplatData)
+   SphericalHarmonics.ush   - NO CHANGES (SH eval math is format-independent)
+   GaussianSplatRendering.usf - NO CHANGES (reads ViewDataBuffer, format unchanged)
+   CalcDistances.usf        - NO CHANGES (reads ViewDataBuffer, format unchanged)
+   RadixSort shaders        - NO CHANGES (sort buffers, format unchanged)
+
+
+ Future: SH Compression (deferred, SH eval currently disabled)
+ ─────────────────────────────────────────────────────────────
+ When SH eval is re-enabled, compress SH from Float16 (90 bytes) to bit-packed:
+   SH1: 9 coeffs × 7-bit = 8 bytes, SH2: 15 × 8-bit = 16 bytes, SH3: 21 × 6-bit = 16 bytes
+   Total: 40 bytes/splat (vs 90). See SH COMPRESSION section above for details.
+
+
+================================================================================
+ IMPLEMENTATION ORDER
+================================================================================
+
+ The 4 optimizations are independent and can be done in any order.
+ Recommended order: Opt 1 → Opt 2 → Opt 3 → Opt 4 (highest VRAM/$effort first)
+
+ ── Opt 1: Stop SH Upload (10 min, saves 2,459 MB) ──────────────────────────
+
+ Step 1.1: Change SHBands default from 3 to 0 in GaussianSplatAsset.h
+ Step 1.2: Guard SH buffer creation in GaussianSplatSceneProxy.cpp
+ Step 1.3: Rebuild, verify splats still render correctly (should be identical
+           since SH eval was already disabled via "if (false && SHOrder > 0)")
+ Step 1.4: Check VRAM — should drop by ~2.4 GB immediately
+
+
+ ── Opt 2: Skip Per-Proxy Dynamic Buffers (30 min, saves 1,877 MB) ──────────
+
+ Step 2.1: In InitRHI(), read gs.UseGlobalAccumulator CVar
+ Step 2.2: If CVar is 1, skip CreateDynamicBuffers()
+ Step 2.3: Add null checks in any per-proxy rendering fallback path that
+           accesses ViewDataBuffer/SortBuffers (should never be hit when
+           global accum is active, but defensive)
+ Step 2.4: Rebuild, verify the global accumulator path still renders correctly
+ Step 2.5: Check VRAM — should drop by another ~1.9 GB
+
+
+ ── Opt 3: Cap Global Accumulator Budget (1-2 hours, saves ~1,936 MB) ───────
+
+ Step 3.1: Add gs.MaxRenderBudget CVar (default 3,000,000) in GaussianSplatting.cpp
+ Step 3.2: Modify ResizeIfNeeded() to cap AllocatedCount
+ Step 3.3: Add MaxRenderBudget shader parameter to GlobalAccumulatorPrefixSum.usf
+ Step 3.4: After prefix sum computes total visible, clamp to budget
+ Step 3.5: Ensure CalcDistances and RadixSort indirect dispatches use clamped count
+ Step 3.6: Ensure DrawSplatsGlobal indirect args use clamped count
+ Step 3.7: Rebuild, test with camera moving around:
+           - Verify no crashes when visible count exceeds budget (graceful clamp)
+           - Verify visual quality is acceptable (distant splats drop first)
+           - Try different budget values: 1M, 2M, 3M, 5M
+ Step 3.8: Check VRAM — global accum should be ~195 MB instead of ~2.1 GB
+
+
+ ── Opt 4: Packed Static Data (1-2 days, saves 875 MB) ──────────────────────
+
+ Step 4.1: Add encoding/decoding utilities to GaussianDataTypes.h
+   - Implement and test each function independently:
+     a. float → float16 → float roundtrip
+     b. FQuat4f → octahedral 3 bytes → FQuat4f roundtrip
+     c. float scale → uint8 log → float scale roundtrip
+     d. color float → uint8 sRGB → float linear roundtrip
+   - Test with known values: identity quaternion, axis-aligned rotations,
+     typical scale values (1.0, 0.01, 100.0), edge cases (very small scale)
+
+ Step 4.2: Implement PackSplatData() in GaussianSplatAsset.cpp
+   - Replace CompressPositions + CompressRotationScale + CreateColorTextureData
+   - Write 4 uint32 per splat to PackedSplatBulkData
+   - Add position range warning (log if any position > ±60000 cm)
+
+ Step 4.3: Update GaussianSplatAsset serialization
+   - Bump asset version
+   - Replace 3 BulkData members with 1 PackedSplatBulkData
+   - Update Serialize(), PostLoad(), GetMemoryUsage()
+   - Update GetDecompressedPositions() for new format
+
+ Step 4.4: Update GPU resource creation (GaussianSplatSceneProxy)
+   - Single PackedSplatBuffer (ByteAddressBuffer, 16 bytes/splat)
+   - Remove separate buffer creation code
+
+ Step 4.5: Rewrite shader load functions (GaussianSplatting.ush)
+   - Implement UnpackSplat() with full decode pipeline
+   - Implement octahedral decode + log scale decode in HLSL
+
+ Step 4.6: Update CalcViewData.usf
+   - Use UnpackSplat() instead of separate Load calls
+   - Remove obsolete parameters
+
+ Step 4.7: Update shader parameter binding (ViewExtension)
+   - Bind PackedSplatBuffer, remove old bindings
+
+ Step 4.8: Rebuild and test
+   - Reimport test PLY file (old assets will fail version check)
+   - Verify visual correctness:
+     a. Splat positions are correct (not shifted/rotated)
+     b. Colors are correct (no channel swapping, no green fringing)
+     c. Rotations are correct (splats oriented properly, not all spherical)
+     d. Scales are correct (splats not too big or too small)
+   - Compare VRAM before/after
+
+ Step 4.9: Clean up
+   - Remove dead code (old compression functions, texture creation, etc.)
+   - Remove unused enums if no longer needed
+
+
+================================================================================
+ RISK AREAS & VERIFICATION CHECKLIST
+================================================================================
+
+ ── Opt 1 Risks (SH) ────────────────────────────────────────────────────────
+
+ [ ] Verify SH eval is truly disabled: grep for SHOrder usage in shaders.
+     CalcViewData.usf has "if (false && SHOrder > 0)" — confirm no other path.
+
+ [ ] Changing SHBands default from 3→0 means newly imported assets won't have
+     SH data. If SH eval is re-enabled later, old assets imported with SHBands=0
+     would need reimport. This is acceptable since SH eval is disabled anyway.
+
+ [ ] Existing assets already on disk have SHBands=3 serialized. They will still
+     have SH bulk data, but the GPU upload will be skipped. No data loss.
+
+ ── Opt 2 Risks (Per-Proxy Dynamic) ─────────────────────────────────────────
+
+ [ ] If gs.UseGlobalAccumulator is toggled at runtime (0→1 or 1→0), per-proxy
+     buffers may not exist. Need either:
+     a. Lazy allocation on first use (robust), or
+     b. Require restart after CVar change (simple, document it)
+     Recommend (a) for safety.
+
+ [ ] Null-check all per-proxy buffer access in the per-proxy rendering fallback
+     path. If buffers are null and the fallback path is hit, it would crash.
+     Specifically check: ViewDataBuffer, SortDistanceBuffer, SortKeysBuffer,
+     SortKeysBufferAlt, SortDistanceBufferAlt, RadixHistogramBuffer.
+
+ [ ] The per-proxy CLUSTER buffers (CompactedSplatIndicesBuffer, etc.) are
+     still needed even with global accumulator — they feed the compaction phase.
+     Do NOT skip CreateClusterBuffers().
+
+ ── Opt 3 Risks (Budget Cap) ────────────────────────────────────────────────
+
+ [ ] When visible splat count exceeds budget, some splats won't be rendered.
+     This should happen gracefully — distant/low-priority splats are dropped.
+     SparkJS handles this via LOD tree traversal priority. Our Nanite compaction
+     processes clusters in hierarchy order, so leaf clusters (fine detail) would
+     naturally be the ones dropped when budget is exceeded.
+     VERIFY: the compaction order puts nearby/important splats first.
+
+ [ ] The prefix sum shader writes total visible count → clamped count. Ensure
+     the clamped count is written to BOTH the sort params AND draw indirect args.
+     A mismatch would cause sort to process N splats but draw to attempt M.
+
+ [ ] Buffer resize: if MaxRenderBudget is increased at runtime, global buffers
+     need to grow. ResizeIfNeeded() already handles resizing — just make sure
+     it compares against the new cap, not the old allocated count.
+
+ [ ] Edge case: if ALL 38 proxies are behind the camera, visible count = 0.
+     Sort and draw dispatches with count=0 should be a no-op. Verify the
+     indirect args handle this (dispatch 0 groups is valid but check no div-by-0).
+
+ ── Opt 4 Risks (Packed Format — Data Mapping) ──────────────────────────────
+
+ These are the specific places where data mapping has gone wrong before:
+
+ [ ] Quaternion component order: FQuat4f stores (X, Y, Z, W) internally.
+     The axis-angle decomposition must use:
+       theta = 2 × acos(Q.W)
+       axis = normalize(Q.X, Q.Y, Q.Z)
+     NOT the reverse. Double-check FQuat4f member layout.
+
+ [ ] Quaternion sign convention: If Q.W < 0, negate all 4 components before encoding.
+     Both Q and -Q represent the same rotation, but axis-angle needs W >= 0.
+
+ [ ] Octahedral folding: The folding step for axis.z < 0 must use the ORIGINAL
+     p.x value when computing new p.y (and vice versa). Common bug: using the
+     already-modified value. SparkJS code:
+       let tmp = p_x;
+       p_x = (1 - Math.abs(p_y)) * Math.sign(p_x);
+       p_y = (1 - Math.abs(tmp)) * Math.sign(p_y);   // uses tmp, not p_x
+
+ [ ] Scale log range: Our scales are in centimeters (100× larger than SparkJS meters).
+     Using SparkJS's range [-12, 9] directly would put most of our scales in the
+     upper half of the uint8 range, wasting precision. Use [-8, 14] instead.
+
+ [ ] Color gamma: Current pipeline stores LINEAR float16 colors in texture.
+     New pipeline stores sRGB uint8 in buffer. The shader must convert back:
+       linear = pow(srgb_byte / 255.0, 2.2)
+     Current CalcViewData.usf already applies pow(color, 2.2), so this should
+     work, but verify the gamma is not applied twice.
+
+ [ ] Position component order: FVector3f(X, Y, Z) in UE space. Pack as:
+       word1 = packHalf2x16(Position.X, Position.Y)
+       word2 low 16 bits = toHalf(Position.Z)
+     The shader must unpack in the same order. No axis swapping at this stage.
+
+ [ ] Float16 precision for positions: max representable = 65504.
+     In cm: 65504 cm = 655.04 meters. Typical gaussian splat scenes are <100m
+     across, so this should be fine. But if a PLY has world-space coordinates
+     centered far from origin, positions will overflow. Add import-time warning.
+
+ [ ] Existing Nanite/cluster code: ClusterBuilder references FGaussianSplatData
+     (CPU format), not GPU buffers. It should be unaffected by GPU format changes.
+     But verify that BuildNaniteClusterHierarchy() still works since it calls
+     InitializeFromSplatData() which now uses the new packing.
+
+ [ ] Global Accumulator path: The global accumulator merges ViewDataBuffers
+     across proxies. Since ViewDataBuffer format is UNCHANGED, the global
+     accumulator should work without modifications. Only the per-proxy
+     CalcViewData dispatch needs to read from the new PackedSplatBuffer.
+
+ [ ] Asset version bump: Old assets (pre-packed) will fail the version check
+     in Serialize() and log an error. Users must reimport their PLY files.
+     This is the expected behavior for a breaking format change.
+

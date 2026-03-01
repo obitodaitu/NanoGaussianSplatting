@@ -59,6 +59,7 @@ RWStructuredBuffer<uint>  GlobalSortIndirectArgs;
 RWStructuredBuffer<uint>  GlobalSortParams;
 RWStructuredBuffer<uint>  GlobalDrawIndirectArgs;
 uint ProxyCount;
+uint MaxRenderBudget;  // Budget cap: clamp total visible to this value (0 = no cap)
 
 [numthreads(1, 1, 1)]
 void MainCS(uint3 DTid : SV_DispatchThreadID)
@@ -67,9 +68,16 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
 	for (uint i = 0u; i < ProxyCount; i++)
 	{
 		GlobalBaseOffsets[i] = offset;
-		offset += GlobalVisibleCountArray[i];
+		uint proxyVisible = GlobalVisibleCountArray[i];
+		// Clamp per-proxy allocation so total never exceeds budget
+		if (MaxRenderBudget > 0u)
+		{
+			uint remaining = (MaxRenderBudget > offset) ? (MaxRenderBudget - offset) : 0u;
+			proxyVisible = min(proxyVisible, remaining);
+		}
+		offset += proxyVisible;
 	}
-	GlobalBaseOffsets[ProxyCount] = offset;  // TotalVisible sentinel
+	GlobalBaseOffsets[ProxyCount] = offset;  // TotalVisible (clamped to budget)
 
 	// Guard against zero (pathological case — dispatching 0 groups is invalid)
 	uint numGroups256  = max((offset + 255u)  / 256u,  1u);

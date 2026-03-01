@@ -7,13 +7,27 @@
 
 void FGaussianGlobalAccumulator::ResizeIfNeeded(FRHICommandListBase& RHICmdList, uint32 NewTotalCount)
 {
+	// Apply render budget cap: working buffers only need to hold up to MaxRenderBudget splats,
+	// not ALL splats. With Nanite LOD compaction, visible count is typically much smaller.
+	static IConsoleVariable* CVarBudget = IConsoleManager::Get().FindConsoleVariable(TEXT("gs.MaxRenderBudget"));
+	uint32 MaxBudget = (CVarBudget && CVarBudget->GetInt() > 0) ? (uint32)CVarBudget->GetInt() : 0;
+	if (MaxBudget > 0 && NewTotalCount > MaxBudget)
+	{
+		NewTotalCount = MaxBudget;
+	}
+
 	if (NewTotalCount <= AllocatedCount)
 	{
 		return;
 	}
 
-	// Add 20% headroom to avoid per-frame reallocation when streaming adds tiles
+	// Add 20% headroom to avoid per-frame reallocation when streaming adds tiles,
+	// but never exceed the budget cap.
 	uint32 NewAllocatedCount = FMath::Max(NewTotalCount + NewTotalCount / 5, 4096u);
+	if (MaxBudget > 0)
+	{
+		NewAllocatedCount = FMath::Min(NewAllocatedCount, MaxBudget);
+	}
 	uint32 NewNumTiles = FMath::DivideAndRoundUp(NewAllocatedCount, 1024u);
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianGlobalAccumulator: Resizing from %u to %u splats (%u tiles)"),
