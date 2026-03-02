@@ -12,9 +12,24 @@
 ***條列有開放出來的重要API > list what feature exposed to blueprint
 **************************************************************************************************
 
+This is the Unreal Engine plugin I created called Gaussian Splatting "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render gaussian splatting PLY file inside Unreal Engine.
+
+Previously the f_rest data in the PLY file does not render correctly so I disabled it.
+I want to make it work now.
+I want the plugin to support standard PLY format.
+Help me make the plugin that can read and render the f_rest data from the PLY file.
+Make sure to deal carefully with the data mapping.
+Previous we usually messed up the data of postion, rotation, scale....
+As the result the gaussian splats became a mess.
+The imported PLY file, uasset to GPU should have data mapped correctly0 
+
+
+
 
 [SH function not working]
-	- 
+	- only f_dc is working
+	- f_rest is not working
 
 
 -----------------------------------------------------------------------------------------
