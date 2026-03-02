@@ -1,29 +1,20 @@
 
 [To Do list]
-***SH function目前是失敗的
-*bulkdata有大小限制 > aerial的野柳超出bulk data的大小 > 沒關係，不用到那麼大
-***整理筆記
-***初始效能慢 > 不知道為什麼要等一下效能才會上來!?
-***再對比一次Nanite, spark, supersplat的設計
-***製作collision > 用point去產生bounding box就好 > 加一個asset action check box > console command preview collision
-***先做一個tile切割器，再開nanite跟level streaming就好
-***Asset好像是反的
-***測試多種PLY，兼容性問題	
-***gs.UseGlobalAccumulator > do we need this? This should always be on right?
-***大地形肯定是要切成多塊單元的，不管是asset還是地形，邏輯其實都一樣
-***Code review
-***Demo - 用野柳+火災狗
 ***Make file smaller: https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/
-***tumbnail壞了
-***VRAM看譨不能再壓縮，目前100隻Llama VRAM會到11GB
+***VRAM看能不能再壓縮，目前100隻Llama VRAM會到11GB
+***初始效能慢 > 不知道為什麼要等一下效能才會上來!? > 再跑一次insight
+***再對比一次Nanite, spark, supersplat的設計
+***測試多種PLY，兼容性問題 > 沒有SH資料就補0，mapping才不會錯
+***整理筆記
+***Code review
+***Demo - 野柳+小馬
+***先做一個tile切割器，再開nanite跟level streaming就好,地形肯定要切成多塊單元，不管是asset還是地形邏輯其實都一樣
+***條列有開放出來的重要API > list what feature exposed to blueprint
 **************************************************************************************************
 
 
-
-
-
-
-
+[SH function not working]
+	- 
 
 
 -----------------------------------------------------------------------------------------

@@ -22,21 +22,6 @@ public:
 	~FGaussianSplatRenderer();
 
 	/**
-	 * Render Gaussian splats for a scene proxy
-	 * Called from the render thread
-	 */
-	static void Render(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		int32 SplatCount,
-		int32 SHOrder,
-		float OpacityScale,
-		float SplatScale
-	);
-
-	/**
 	 * Dispatch the view data calculation compute shader
 	 * @param bUseLODRendering If true, skip splats covered by parent LOD clusters
 	 */

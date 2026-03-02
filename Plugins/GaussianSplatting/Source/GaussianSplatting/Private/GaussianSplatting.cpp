@@ -42,15 +42,6 @@ TAutoConsoleVariable<float> CVarLODErrorThreshold(
 	TEXT("Default: 32.0"),
 	ECVF_RenderThreadSafe);
 
-/** Enable/disable global accumulator (one draw call for all proxies). Default ON. */
-TAutoConsoleVariable<int32> CVarUseGlobalAccumulator(
-	TEXT("gs.UseGlobalAccumulator"),
-	1,
-	TEXT("Enable the global accumulator for one-draw-call rendering of all Gaussian Splat proxies.\n")
-	TEXT(" 1: Global accumulator (single sort + single draw for all proxies, correct cross-tile blending)\n")
-	TEXT(" 0: Legacy per-proxy rendering (N sorts + N draws, kept for debugging/regression)"),
-	ECVF_RenderThreadSafe);
-
 /** Maximum number of splats the global accumulator will allocate working buffers for.
  *  Caps VRAM usage for ViewData/sort/histogram buffers. If total visible splats exceed
  *  this budget (after Nanite LOD compaction), excess splats are simply not rendered.
@@ -164,14 +155,15 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		);
 	}
 
-	const bool bUseGlobalAccumulator = (CVarUseGlobalAccumulator.GetValueOnRenderThread() != 0);
-
-	if (bUseGlobalAccumulator && GlobalAccumulator.IsValid())
+	if (!GlobalAccumulator.IsValid())
 	{
-		//------------------------------------------------------------------
-		// GLOBAL ACCUMULATOR PATH: Phase 1 (per-proxy CalcViewData) +
-		// Phase 2 (single CalcDistances + RadixSort) + single DrawSplats
-		//------------------------------------------------------------------
+		return;
+	}
+
+	//------------------------------------------------------------------
+	// GLOBAL ACCUMULATOR PATH: Phase 1 (per-proxy CalcViewData) +
+	// Phase 2 (single CalcDistances + RadixSort) + single DrawSplats
+	//------------------------------------------------------------------
 
 		// Build the list of visible proxies and compute total splat count (CPU-side)
 		struct FProxyRenderInfo
@@ -501,51 +493,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 				}
 			}
 		);
-	}
-	else
-	{
-		//------------------------------------------------------------------
-		// LEGACY PER-PROXY PATH (fallback, kept for debugging/regression)
-		//------------------------------------------------------------------
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("GaussianSplatRendering"),
-			PassParameters,
-			ERDGPassFlags::Raster,
-			[SceneView, Proxies](FRHICommandListImmediate& RHICmdList)
-			{
-				if (!SceneView) return;
-				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering);
-
-				for (FGaussianSplatSceneProxy* Proxy : Proxies)
-				{
-					if (!Proxy) continue;
-					if (&Proxy->GetScene() != SceneView->Family->Scene) continue;
-					if (!Proxy->IsShown(SceneView)) continue;
-
-					Proxy->TryInitializeColorTexture(RHICmdList);
-
-					FGaussianSplatGPUResources* GPUResources = Proxy->GetGPUResources();
-					if (!GPUResources || !GPUResources->IsValid()) continue;
-
-					// Per-proxy path requires dynamic buffers (ViewData, sort).
-					// These may be absent if proxy was created while gs.UseGlobalAccumulator=1.
-					if (!GPUResources->ViewDataBuffer.IsValid()) continue;
-
-					const FBoxSphereBounds& Bounds = Proxy->GetBounds();
-					if (!SceneView->ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent)) continue;
-
-					FGaussianSplatRenderer::Render(
-						RHICmdList, *SceneView, GPUResources,
-						Proxy->GetLocalToWorld(),
-						Proxy->GetSplatCount(),
-						Proxy->GetSHOrder(),
-						Proxy->GetOpacityScale(),
-						Proxy->GetSplatScale()
-					);
-				}
-			}
-		);
-	}
 }
 
 void FGaussianSplattingModule::ShutdownModule()

@@ -205,18 +205,10 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	CreateStaticBuffers(RHICmdList);
 
 	// TotalSplatCount is needed by CreateClusterBuffers (compaction buffer sizing).
-	// Set it here so it's valid regardless of whether dynamic buffers are created.
 	TotalSplatCount = SplatCount;
 
-	// When the global accumulator is active, per-proxy dynamic buffers (ViewData, sort,
-	// histogram) are never used — the global path owns all working buffers. Skipping
-	// allocation saves ~49 MB per proxy (e.g. 1.9 GB for 38 proxies).
-	static IConsoleVariable* CVarGlobalAccum = IConsoleManager::Get().FindConsoleVariable(TEXT("gs.UseGlobalAccumulator"));
-	const bool bUseGlobalAccumulator = CVarGlobalAccum && CVarGlobalAccum->GetInt() != 0;
-	if (!bUseGlobalAccumulator)
-	{
-		CreateDynamicBuffers(RHICmdList);
-	}
+	// NOTE: Per-proxy dynamic buffers (ViewData, sort, histogram) are NOT created here.
+	// The global accumulator owns all working buffers, saving ~49 MB per proxy.
 
 	CreateIndexBuffer(RHICmdList);
 	CreateClusterBuffers(RHICmdList);
