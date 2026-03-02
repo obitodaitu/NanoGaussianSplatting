@@ -59,8 +59,9 @@ struct GAUSSIANSPLATTING_API FGaussianGlobalAccumulator
 	// Global compaction path: fixed-size buffers (allocated once, MAX_PROXY_COUNT)
 	//----------------------------------------------------------------------
 
-	/** Maximum number of proxies supported by the compaction prefix-sum path. */
-	static const uint32 MAX_PROXY_COUNT = 64;
+	/** Maximum number of proxies supported by the compaction prefix-sum path.
+	 *  Buffer cost: ~8 bytes per proxy (VisibleCount + BaseOffset), so 8192 = ~64KB. */
+	static const uint32 MAX_PROXY_COUNT = 8192;
 
 	/** [MAX_PROXY_COUNT] — one visible count per proxy, gathered from per-proxy VisibleSplatCountBuffer */
 	FBufferRHIRef GlobalVisibleCountArrayBuffer;
