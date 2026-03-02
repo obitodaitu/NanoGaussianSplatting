@@ -54,14 +54,15 @@ TAutoConsoleVariable<int32> CVarUseGlobalAccumulator(
 /** Maximum number of splats the global accumulator will allocate working buffers for.
  *  Caps VRAM usage for ViewData/sort/histogram buffers. If total visible splats exceed
  *  this budget (after Nanite LOD compaction), excess splats are simply not rendered.
- *  Default 3M. At 3M: working buffers ≈ 195 MB vs ≈ 2,131 MB at 27.3M uncapped. */
+ *  When budget is active, closer assets get priority (farther assets culled first).
+ *  Default: 0 (unlimited). Example: 3M budget uses ~195 MB working buffers. */
 TAutoConsoleVariable<int32> CVarMaxRenderBudget(
 	TEXT("gs.MaxRenderBudget"),
-	3000000,
+	0,
 	TEXT("Maximum number of splats to render per frame (render budget).\n")
 	TEXT("Caps global accumulator buffer allocation and GPU-side visible count.\n")
-	TEXT("Lower values reduce VRAM for working buffers.\n")
-	TEXT("Default: 3000000 (3M). Set to 0 to disable budget cap."),
+	TEXT("When budget is exceeded, farther assets are culled first (closer assets have priority).\n")
+	TEXT("Default: 0 (unlimited). Set to a positive value (e.g. 3000000) to limit splat count."),
 	ECVF_RenderThreadSafe);
 
 /** Debug: Force a specific LOD level for debugging LOD hierarchy */
@@ -179,10 +180,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 			FMatrix LocalToWorld;
 			uint32 GlobalBaseOffset;
 			bool bUseLODRendering;
+			float DistanceToCamera;  // For budget priority sorting (closer = higher priority)
 		};
 		TArray<FProxyRenderInfo> VisibleProxies;
 		uint32 TotalSplatCount = 0;
 		bool bAllNanite = true;  // True if every visible proxy supports compaction
+
+		FVector CameraLocation = SceneView->ViewLocation;
 
 		for (FGaussianSplatSceneProxy* Proxy : Proxies)
 		{
@@ -199,16 +203,29 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 			FProxyRenderInfo Info;
 			Info.Proxy = Proxy;
 			Info.LocalToWorld = Proxy->GetLocalToWorld();
-			Info.GlobalBaseOffset = TotalSplatCount;
+			Info.GlobalBaseOffset = 0;  // Will be computed after sorting
 			Info.bUseLODRendering = GPUResources->bEnableNanite && GPUResources->bHasLODSplats;
+			Info.DistanceToCamera = FVector::Dist(Bounds.Origin, CameraLocation);
 			VisibleProxies.Add(Info);
-			TotalSplatCount += (uint32)Proxy->GetSplatCount();
 
 			// All proxies must support Nanite compaction for the fast global path
 			if (!GPUResources->bEnableNanite || !GPUResources->bHasClusterData || !GPUResources->bSupportsCompaction)
 			{
 				bAllNanite = false;
 			}
+		}
+
+		// Sort by distance: closer proxies first (get budget priority when MaxRenderBudget is active)
+		VisibleProxies.Sort([](const FProxyRenderInfo& A, const FProxyRenderInfo& B)
+		{
+			return A.DistanceToCamera < B.DistanceToCamera;
+		});
+
+		// Compute GlobalBaseOffset and TotalSplatCount after sorting
+		for (FProxyRenderInfo& Info : VisibleProxies)
+		{
+			Info.GlobalBaseOffset = TotalSplatCount;
+			TotalSplatCount += (uint32)Info.Proxy->GetSplatCount();
 		}
 
 		// Safety: global accumulator only supports up to MAX_PROXY_COUNT proxies
