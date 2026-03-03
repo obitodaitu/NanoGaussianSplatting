@@ -1,0 +1,213 @@
+
+----------------------------------------------------------------------------------
+Compare with Unity plugin
+----------------------------------------------------------------------------------
+  Investigation Summary: SH Rendering Color Shift Issue
+
+  Symptom
+
+  - Lower viewing angle (camera below, looking up): GREEN tint
+  - Higher viewing angle (camera above, looking down): RED tint
+  - Colors correct when SH rendering is disabled
+
+  Key Comparison: Unity vs UE Approach
+
+  Unity's Approach:
+  1. PLY Import: No coordinate transformation - PLY data used AS-IS (PLY space = Unity space)
+  2. Runtime: View direction transformed to object space via _MatrixWorldToObject matrix:
+  float3 objViewDir = mul((float3x3)_MatrixWorldToObject, worldViewDir);
+  3. SH Evaluation: Direction negated inside ShadeSH:
+  dir *= -1;
+  res += SH_C1 * (-splat.sh1 * y + splat.sh2 * z - splat.sh3 * x);
+
+  UE's Approach:
+  1. PLY Import: Positions transformed from PLY to UE space:
+    - UE.X = PLY.Z (forward)
+    - UE.Y = PLY.X (right)
+    - UE.Z = -PLY.Y (up, negated)
+    - SH coefficients NOT transformed (remain in PLY space)
+  2. Runtime: View direction transformed via hardcoded coordinate mapping:
+  float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+  viewDirPLY = -viewDirPLY;
+  3. SH Evaluation:
+  result += SH_C1 * (-y * sh[0] + z * sh[1] - x * sh[2]);
+
+  What I Verified as Correct
+
+  1. SH coefficient storage order: Both Unity and UE convert from PLY's planar format (R0-R14, G0-G14, B0-B14) to
+  interleaved format (R0G0B0, R1G1B1, ...). ✓
+  2. Coordinate transformation math: The inverse mapping (UE.Y, -UE.Z, UE.X) correctly converts UE world direction to
+  PLY space. ✓
+  3. SH evaluation formula: Both use identical formula: SH_C1 * (-y * sh0 + z * sh1 - x * sh2). ✓
+  4. Direction negation: Both end up using camera→splat direction for evaluation. ✓
+
+  Potential Issue Found
+
+  Critical Difference: Unity transforms the view direction using the actual object transformation matrix
+  (_MatrixWorldToObject), while UE uses a hardcoded coordinate transformation that:
+
+  1. Does NOT use LocalToWorld inverse for direction transformation
+  2. Only accounts for PLY→UE coordinate system change
+  3. Does NOT account for any rotation applied to the GaussianSplat actor/component in the scene
+
+  The comment in CalcViewData.usf (line 168) explicitly states this limitation:
+  // NOTE: This assumes the asset has no rotation in UE (identity LocalToWorld rotation)
+
+  However, even with identity rotation, there could be another issue...
+
+  Deeper Investigation Needed
+
+  The vertical color shift (red↔green) specifically affecting the Y-component suggests one of these possibilities:
+
+  1. Sign error in view direction transformation: The Y-component mapping -viewDirWorld.z might have incorrect sign for
+  certain edge cases
+  2. Mismatch in SH coefficient interpretation: The SH band 1 coefficients might need to be reordered or sign-flipped
+  when the coordinate system changes (though mathematically this shouldn't be needed if view direction is transformed
+  correctly)
+  3. LocalToWorld not being identity: Even if the asset appears at default position, the LocalToWorld matrix might have
+  a baked-in rotation from the import process that the hardcoded formula doesn't account for
+  4. The transformation should use LocalToWorld inverse: Instead of the hardcoded formula, the view direction should be
+  transformed using:
+  float3 viewDirLocal = mul((float3x3)transpose(LocalToWorld), viewDirWorld);
+  4. And then apply the PLY→UE coordinate conversion to that local direction (or incorporate it into the matrix).
+
+  Would you like me to:
+  1. Check if LocalToWorld actually contains only the PLY→UE coordinate conversion?
+  2. Compare the exact LocalToWorld matrix UE uses vs what Unity's equivalent would be?
+  3. Look at whether there's a 90-degree or other rotation baked into the asset that the hardcoded formula isn't
+  accounting for?
+
+----------------------------------------------------------------------------------
+Compare with SparkJS
+----------------------------------------------------------------------------------
+Based on my detailed analysis comparing the UE plugin with SparkJS, here's what I've found:
+
+  Summary of Investigation
+
+  What's Correct
+
+  1. SH Basis Functions - The formulas match exactly:
+    - UE: SH_C1 * (-y * sh[0] + z * sh[1] - x * sh[2])
+    - SparkJS: sh1_0 * (-0.4886025 * viewDir.y) + sh1_1 * (0.4886025 * viewDir.z) + sh1_2 *
+  (-0.4886025 * viewDir.x)
+    - All higher bands (2 and 3) also match
+  2. SH Coefficient Storage Order - Both read f_rest in the same order:
+    - sh[0] from f_rest_0 (R), f_rest_15 (G), f_rest_30 (B)
+    - sh[1] from f_rest_1, f_rest_16, f_rest_31
+    - etc.
+  3. RGB Channel Ordering - X=R, Y=G, Z=B throughout the pipeline
+
+  The Likely Issue: View Direction Coordinate Transform
+
+  Looking at CalcViewData.usf lines 164-173:
+
+  // UE: X-forward, Y-right, Z-up
+  // PLY/COLMAP: X-right, Y-down, Z-forward
+  // Mapping: UE(X,Y,Z) -> PLY(Y,-Z,X)
+  float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+
+  // Negate to match Unity's ShadeSH which does "dir *= -1" internally
+  viewDirPLY = -viewDirPLY;
+
+  After the negation, the final viewDirPLY becomes:
+  viewDirPLY = (-viewDirWorld.y, viewDirWorld.z, -viewDirWorld.x)
+
+  In SparkJS, the view direction is computed directly in object/PLY space without any transform:
+  const viewDir = normalize(sub(center, viewCenterInObject));  // FROM camera TO splat
+
+  The key difference: SparkJS doesn't apply any coordinate transform because it loads PLY
+  coordinates directly without conversion. UE transforms coordinates at import, then tries to
+  reverse the transform for SH evaluation.
+
+  Potential Bug Location
+
+  The negation on line 173 may be incorrect or the coordinate mapping might have a sign error.
+  After tracing through the math:
+
+  When camera is above the splat (looking down):
+  - UE's viewDirPLY.y = viewDirWorld.z (positive when camera above)
+  - But PLY Y-down means +Y = "down", so direction from camera to splat (downward) should be +Y
+  - This SEEMS correct...
+
+  However, looking at the symptom (greenish at low angle, reddish at high angle), this suggests the
+   Y component of viewDirPLY may have a sign error affecting the sh[0] contribution which uses -y.
+
+  Recommended Investigation
+
+  1. Test without the negation on line 173 to see if colors reverse
+  2. Test with swapped signs in the coordinate transform
+  3. Compare specific view directions: Place camera directly above/below and log the computed
+  viewDirPLY vs what SparkJS computes for the same scene setup
+  4. Check if SparkJS flips the Y axis when loading PLY (Three.js is Y-up, PLY is Y-down)
+
+  The issue is subtle and likely involves a combination of:
+  - The direction convention (splat-to-camera vs camera-to-splat)
+  - The coordinate system handedness difference
+  - How the negation interacts with the axis mapping
+  
+----------------------------------------------------------------------------------
+Compare with SuperSplat
+----------------------------------------------------------------------------------
+  Investigation Summary
+
+  I've performed a thorough analysis of your SH rendering implementation by comparing with
+  the https://github.com/graphdeco-inria/gaussian-splatting and
+  https://github.com/playcanvas/supersplat.
+
+  What I Verified as Correct:
+
+  1. SH Constants - Your SphericalHarmonics.ush constants match the original exactly:
+    - SH_C0 = 0.28209479177387814
+    - SH_C1 = 0.4886025119029199
+    - SH_C2/C3 arrays match
+  2. SH Evaluation Formula - The band 1 formula -y*sh[0] + z*sh[1] - x*sh[2] matches the
+  original
+  3. SH Coefficient Storage Order - PLY files store f_rest_0..14 (R), f_rest_15..29 (G),
+  f_rest_30..44 (B), and your loader correctly reads this
+  4. Color Channel Order - R=.X, G=.Y, B=.Z is preserved through storage and loading
+  5. Coordinate Transform - The UE→PLY transform (Y, -Z, X) correctly inverts the position
+  transform
+
+  Potential Issue Found:
+
+  Looking at SuperSplat's approach in splat-shader.ts:113-114:
+  // calculate the model-space view direction
+  vec3 dir = normalize(center.view * mat3(center.modelView));
+
+  SuperSplat computes the view direction in MODEL space (the original PLY local frame), which
+   automatically handles any rotation applied to the asset.
+
+  Your implementation in CalcViewData.usf:168-169:
+  // NOTE: This assumes the asset has no rotation in UE (identity LocalToWorld rotation)
+  float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+
+  This hardcodes the axis transform and does not account for the LocalToWorld rotation.
+
+  Key Question to Verify:
+
+  The symptom "lower angle = green, higher angle = red" could actually be correct behavior
+  depending on how the scene was trained. Typical scenes lit from above produce:
+  - Camera above → sees warm-lit top → more red
+  - Camera below → sees shadowed bottom → more green/blue
+
+  This matches your description!
+
+  To Determine if This is a Bug:
+
+  1. Load the same PLY file in SuperSplat
+  2. Move the camera up and down
+  3. Compare the color shifts:
+    - If SuperSplat shows same color shift pattern → your implementation is correct
+    - If SuperSplat shows opposite pattern → there's a sign/axis bug
+
+  One More Thing to Check:
+
+  In your shader at CalcViewData.usf:173, you negate the direction:
+  viewDirPLY = -viewDirPLY;
+
+  This converts from "splat→camera" to "camera→splat" direction. The original 3DGS uses
+  splat_position - camera_position which is camera→splat. Your logic appears correct, but you
+   could try removing this negation temporarily to see if the colors flip.
+
+  Would you like me to help you test by comparing specific values, or should we explore the
+  SuperSplat comparison first?

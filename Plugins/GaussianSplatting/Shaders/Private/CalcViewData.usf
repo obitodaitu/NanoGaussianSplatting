@@ -27,6 +27,7 @@ uint UseCompaction;      // 1 = use compacted indices (skip visibility checks)
 uint VisibleSplatCount;  // Number of visible splats (when using compaction)
 
 float4x4 LocalToWorld;
+float4x4 WorldToPLY;   // Transforms world direction to PLY/SH space for SH evaluation
 float4x4 WorldToClip;
 float4x4 WorldToView;
 float3 CameraPosition;
@@ -36,6 +37,7 @@ uint SplatCount;
 uint SHOrder;
 uint NumSHCoeffs;      // Total SH coefficients including DC (4, 9, or 16)
 uint UseSHRendering;   // 1 = use view-dependent SH evaluation, 0 = use pre-computed DC color
+uint SHDebugMode;      // Debug: 0=off, 1=viewDirPLY, 2=viewDirWorld, 3=band1, 4=DC
 float OpacityScale;
 float SplatScale;
 uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
@@ -158,30 +160,63 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		LoadSH(SHBuffer, splatIndex, NumSHCoeffs, shDC, sh);
 
 		// Compute view direction in world space (FROM splat TO camera)
-		// This matches Unity's convention: worldViewDir = camera - splatPos
 		float3 viewDirWorld = normalize(CameraPosition - worldPos.xyz);
 
-		// Transform view direction from UE world space to PLY/COLMAP space
-		// UE: X-forward, Y-right, Z-up
-		// PLY/COLMAP: X-right, Y-down, Z-forward
-		// Mapping: UE(X,Y,Z) -> PLY(Y,-Z,X)
-		// NOTE: This assumes the asset has no rotation in UE (identity LocalToWorld rotation)
-		float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+		// Transform view direction from world space to PLY/SH space
+		// Step 1: World to Local (for actor rotation support)
+		// For direction vectors, we use transpose of LocalToWorld (inverse for orthonormal rotation)
+		float3 viewDirLocal = mul(viewDirWorld, transpose((float3x3)LocalToWorld));
 
-		// Negate to match Unity's ShadeSH which does "dir *= -1" internally
-		// This converts from splat->camera to camera->splat direction
+		// Step 2: UE Local to PLY space (hardcoded, no matrix ambiguity)
+		// UE: X-forward, Y-right, Z-up
+		// PLY: X-right, Y-down, Z-forward
+		// Mapping: PLY.X = UE.Y, PLY.Y = -UE.Z, PLY.Z = UE.X
+		float3 viewDirPLY = float3(viewDirLocal.y, -viewDirLocal.z, viewDirLocal.x);
+
+		// Negate to convert from splat->camera to camera->splat direction (SH training convention)
 		viewDirPLY = -viewDirPLY;
 
-		// Evaluate spherical harmonics with view direction
-		float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, SHOrder);
+		// Compensate for position transform having negated Y axis (UE.Z = -PLY.Y)
+		// The SH coefficients expect the original PLY orientation, but our Y is flipped
+		viewDirPLY.y = -viewDirPLY.y;
 
-		// Convert SH result to displayable color (add 0.5 offset)
-		// This produces sRGB color values (same as f_dc storage format)
-		shColor = 0.5 + shColor;
+		// Debug visualization modes
+		if (SHDebugMode == 1)
+		{
+			// Show viewDirPLY as RGB: map [-1,1] to [0,1]
+			finalColor = viewDirPLY * 0.5 + 0.5;
+		}
+		else if (SHDebugMode == 2)
+		{
+			// Show viewDirWorld as RGB: map [-1,1] to [0,1]
+			finalColor = viewDirWorld * 0.5 + 0.5;
+		}
+		else if (SHDebugMode == 3)
+		{
+			// Show SH band 1 contribution only (no DC)
+			float3 band1 = EvaluateSH(viewDirPLY, float3(0,0,0), sh, 1);
+			finalColor = band1 * 0.5 + 0.5;  // Map to visible range
+		}
+		else if (SHDebugMode == 4)
+		{
+			// Show DC only (same as UseSHRendering 0)
+			float3 dcColor = 0.5 + shDC;
+			finalColor = pow(max(dcColor, 0.0), 2.2);
+		}
+		else
+		{
+			// Normal SH rendering
+			// Evaluate spherical harmonics with view direction
+			float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, SHOrder);
 
-		// Convert sRGB to linear for UE's linear SceneColor buffer
-		// This matches the non-SH path which also applies pow(x, 2.2)
-		finalColor = pow(max(shColor, 0.0), 2.2);
+			// Convert SH result to displayable color (add 0.5 offset)
+			// This produces sRGB color values (same as f_dc storage format)
+			shColor = 0.5 + shColor;
+
+			// Convert sRGB to linear for UE's linear SceneColor buffer
+			// This matches the non-SH path which also applies pow(x, 2.2)
+			finalColor = pow(max(shColor, 0.0), 2.2);
+		}
 	}
 	else
 	{

@@ -38,6 +38,7 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, VisibleSplatCount)  // Number of visible splats (when using compaction)
 		// Transform matrices
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
+		SHADER_PARAMETER(FMatrix44f, WorldToPLY)  // Transforms world direction to PLY/SH space for SH evaluation
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
 		SHADER_PARAMETER(FMatrix44f, WorldToView)
 		SHADER_PARAMETER(FVector3f, CameraPosition)
@@ -47,6 +48,7 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, SHOrder)
 		SHADER_PARAMETER(uint32, NumSHCoeffs)      // Total SH coefficients including DC (4, 9, or 16)
 		SHADER_PARAMETER(uint32, UseSHRendering)   // 1 = use view-dependent SH evaluation
+		SHADER_PARAMETER(uint32, SHDebugMode)      // Debug: 0=off, 1=viewDirPLY, 2=viewDirWorld, 3=band1, 4=DC
 		SHADER_PARAMETER(float, OpacityScale)
 		SHADER_PARAMETER(float, SplatScale)
 		SHADER_PARAMETER(uint32, GlobalBaseOffset)  // Offset into global ViewDataBuffer (non-compaction global path)

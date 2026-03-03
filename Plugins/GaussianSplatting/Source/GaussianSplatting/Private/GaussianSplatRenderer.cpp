@@ -23,6 +23,7 @@ extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 extern TAutoConsoleVariable<int32> CVarUseSHRendering;
+extern TAutoConsoleVariable<int32> CVarSHDebugMode;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
@@ -42,6 +43,21 @@ uint32 FGaussianSplatRenderer::NextPowerOfTwo(uint32 Value)
 	Value |= Value >> 16;
 	Value++;
 	return Value;
+}
+
+// Compute WorldToPLY matrix for SH evaluation
+// SH coefficients are stored in PLY space, so we need to transform view direction from world to PLY space
+// This combines: (1) WorldToLocal from actor transform, and (2) LocalToPLY coordinate system conversion
+// LocalToPLY rotation: UE(X,Y,Z) -> PLY(Y,-Z,X) where PLY is X-right, Y-down, Z-forward
+static FMatrix ComputeWorldToPLY(const FMatrix& LocalToWorld)
+{
+	static const FMatrix LocalToPLY(
+		FPlane(0, 0, 1, 0),   // UE X -> PLY Z
+		FPlane(1, 0, 0, 0),   // UE Y -> PLY X
+		FPlane(0, -1, 0, 0),  // UE Z -> PLY -Y
+		FPlane(0, 0, 0, 1)
+	);
+	return LocalToWorld.Inverse() * LocalToPLY;
 }
 
 void FGaussianSplatRenderer::DispatchCalcViewData(
@@ -97,6 +113,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -118,6 +135,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
+	Parameters.SHDebugMode = CVarSHDebugMode.GetValueOnRenderThread();
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -715,6 +733,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -736,6 +755,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
+	Parameters.SHDebugMode = CVarSHDebugMode.GetValueOnRenderThread();
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -850,6 +870,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 
 	// Transform matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -871,6 +892,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
+	Parameters.SHDebugMode = CVarSHDebugMode.GetValueOnRenderThread();
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -1275,6 +1297,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 
 	// Transform matrices
 	Parameters.LocalToWorld    = FMatrix44f(LocalToWorld);
+	Parameters.WorldToPLY      = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	Parameters.WorldToClip     = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 	Parameters.WorldToView     = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition  = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -1296,6 +1319,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs   = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
+	Parameters.SHDebugMode   = CVarSHDebugMode.GetValueOnRenderThread();
 	Parameters.OpacityScale  = OpacityScale;
 	Parameters.SplatScale    = SplatScale;
 

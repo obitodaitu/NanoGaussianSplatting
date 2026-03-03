@@ -79,6 +79,18 @@ TAutoConsoleVariable<int32> CVarUseSHRendering(
 	TEXT(" 1: On - evaluate spherical harmonics per splat (default, higher quality)"),
 	ECVF_RenderThreadSafe);
 
+/** Debug mode for SH rendering - visualize intermediate values */
+TAutoConsoleVariable<int32> CVarSHDebugMode(
+	TEXT("gs.SHDebugMode"),
+	0,
+	TEXT("Debug visualization for SH rendering.\n")
+	TEXT(" 0: Off - normal rendering\n")
+	TEXT(" 1: Show viewDirPLY as RGB (PLY space view direction)\n")
+	TEXT(" 2: Show viewDirWorld as RGB (world space view direction)\n")
+	TEXT(" 3: Show SH band 1 contribution only\n")
+	TEXT(" 4: Show DC color only (same as UseSHRendering 0)"),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 
