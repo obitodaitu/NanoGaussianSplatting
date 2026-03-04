@@ -4,7 +4,7 @@
 #include "Misc/FileHelper.h"
 #include "HAL/PlatformFileManager.h"
 
-bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError)
+bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands)
 {
 	OutSplats.Empty();
 
@@ -36,6 +36,34 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 
 	UE_LOG(LogTemp, Log, TEXT("PLY Header parsed: %d vertices, %d bytes per vertex, data at offset %lld"),
 		Header.VertexCount, Header.VertexStride, Header.DataOffset);
+
+	// Detect SH band count from header properties
+	// PLY stores SH in planar format: all R coefficients, then G, then B
+	// Band counts and f_rest indices:
+	// - 0 bands: no f_rest (DC only in f_dc)
+	// - 1 band:  3 coeffs/channel × 3 = 9 total  → f_rest_0..8
+	// - 2 bands: 8 coeffs/channel × 3 = 24 total → f_rest_0..23
+	// - 3 bands: 15 coeffs/channel × 3 = 45 total → f_rest_0..44
+	if (OutSHBands)
+	{
+		if (Header.PropertyOffsets.Contains(TEXT("f_rest_44")))
+		{
+			*OutSHBands = 3;  // Has all 45 coefficients (15 per channel)
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_23")))
+		{
+			*OutSHBands = 2;  // Has 24 coefficients (8 per channel)
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_8")))
+		{
+			*OutSHBands = 1;  // Has 9 coefficients (3 per channel)
+		}
+		else
+		{
+			*OutSHBands = 0;  // No f_rest data (DC only)
+		}
+		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected SH bands = %d"), *OutSHBands);
+	}
 
 	// Validate file size against expected data
 	const int64 ExpectedEnd = Header.DataOffset + static_cast<int64>(Header.VertexCount) * Header.VertexStride;
@@ -263,6 +291,28 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 {
 	OutSplats.SetNum(Header.VertexCount);
 
+	// Detect SH coefficients per channel from available properties
+	// PLY stores SH in planar format: all R coefficients, then G, then B
+	// - 1 band:  3 coeffs/channel (f_rest_0..8)
+	// - 2 bands: 8 coeffs/channel (f_rest_0..23)
+	// - 3 bands: 15 coeffs/channel (f_rest_0..44)
+	int32 CoeffsPerChannel = 0;
+	if (Header.PropertyOffsets.Contains(TEXT("f_rest_44")))
+	{
+		CoeffsPerChannel = 15;  // 3 bands
+	}
+	else if (Header.PropertyOffsets.Contains(TEXT("f_rest_23")))
+	{
+		CoeffsPerChannel = 8;   // 2 bands
+	}
+	else if (Header.PropertyOffsets.Contains(TEXT("f_rest_8")))
+	{
+		CoeffsPerChannel = 3;   // 1 band
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("PLYFileReader: VertexCount=%d, SH CoeffsPerChannel=%d"),
+		Header.VertexCount, CoeffsPerChannel);
+
 	// Read vertices in chunks for efficiency (4096 vertices per chunk)
 	constexpr int32 ChunkSize = 4096;
 	const int32 VertexStride = Header.VertexStride;
@@ -331,19 +381,25 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
 
 			// SH rest coefficients (bands 1-3)
+			// Uses CoeffsPerChannel detected earlier (outside the loop)
 			for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
 			{
-				// PLY stores SH in planar format (from save_ply: transpose(1,2).flatten())
-				// f_rest_0..14  = 15 coefficients for R channel
-				// f_rest_15..29 = 15 coefficients for G channel
-				// f_rest_30..44 = 15 coefficients for B channel
-				FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
-				FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients);
-				FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients * 2);
+				if (c < CoeffsPerChannel)
+				{
+					// Read from correct planar positions
+					FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
+					FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + CoeffsPerChannel);
+					FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + CoeffsPerChannel * 2);
 
-				Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
-				Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);
-				Splat.SH[c].Z = GetPropertyFloat(VertexData, Header, PropNameB);
+					Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
+					Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);
+					Splat.SH[c].Z = GetPropertyFloat(VertexData, Header, PropNameB);
+				}
+				else
+				{
+					// Zero out coefficients beyond what the file contains
+					Splat.SH[c] = FVector3f::ZeroVector;
+				}
 			}
 
 			// Linearize the data

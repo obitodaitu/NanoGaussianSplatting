@@ -140,14 +140,15 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 
 	TArray<FGaussianSplatData> SplatData;
 	FString ErrorMessage;
+	int32 DetectedSHBands = 0;
 
-	if (!FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage))
+	if (!FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage, &DetectedSHBands))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed to read PLY file: %s"), *ErrorMessage);
 		return nullptr;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file"), SplatData.Num());
+	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file (SH bands: %d)"), SplatData.Num(), DetectedSHBands);
 
 	// Create or reuse asset
 	SlowTask.EnterProgressFrame(10.0f, FText::FromString(TEXT("Creating asset...")));
@@ -166,6 +167,9 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 
 	// Store source file path
 	Asset->SourceFilePath = FilePath;
+
+	// Set the detected SH band count BEFORE initializing (CompressSH uses this)
+	Asset->SHBands = DetectedSHBands;
 
 	// Initialize asset from splat data (NO cluster building - user enables Nanite via Asset Actions)
 	SlowTask.EnterProgressFrame(55.0f, FText::FromString(TEXT("Compressing splat data...")));

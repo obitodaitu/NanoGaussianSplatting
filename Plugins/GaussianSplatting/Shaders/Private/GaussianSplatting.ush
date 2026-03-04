@@ -146,29 +146,73 @@ float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex,
 void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numTotalCoeffs, out float3 shDC, out float3 sh[15])
 {
 	// Format: Float16, 3 channels * numTotalCoeffs * 2 bytes
+	// Each coefficient = 3 x float16 = 6 bytes
+	// ByteAddressBuffer requires 4-byte aligned reads, so we read from 4-byte
+	// aligned boundaries and extract the float16 values properly.
+	//
+	// IMPORTANT: bytesPerSplat may NOT be a multiple of 4!
+	// - 1 band:  4 coeffs × 6 bytes = 24 bytes (aligned)
+	// - 2 bands: 9 coeffs × 6 bytes = 54 bytes (NOT aligned!)
+	// - 3 bands: 16 coeffs × 6 bytes = 96 bytes (aligned)
+	// For 2 bands, odd splat indices have misaligned baseOffset.
+
 	uint bytesPerSplat = numTotalCoeffs * 3 * 2;
 	uint baseOffset = splatIndex * bytesPerSplat;
 
-	// Load DC coefficient first (index 0)
+	// Helper function inlined: load 3 float16 values (6 bytes) from any byte offset
+	// For coeff at byte offset B:
+	//   - Aligned offset = B & ~3 (round down to 4-byte boundary)
+	//   - Misalignment = B & 3 (0 or 2, since all offsets are 2-byte aligned)
+
+	// Load DC coefficient (coeff index 0)
 	{
-		uint2 data = shBuffer.Load2(baseOffset);
-		shDC.x = f16tof32(data.x & 0xFFFF);
-		shDC.y = f16tof32(data.x >> 16);
-		shDC.z = f16tof32(data.y & 0xFFFF);
+		uint alignedOffset = baseOffset & ~3u;
+		uint misalignment = baseOffset & 3u;
+		uint3 data = shBuffer.Load3(alignedOffset);
+
+		if (misalignment == 0)
+		{
+			shDC.x = f16tof32(data.x & 0xFFFF);
+			shDC.y = f16tof32(data.x >> 16);
+			shDC.z = f16tof32(data.y & 0xFFFF);
+		}
+		else // misalignment == 2
+		{
+			shDC.x = f16tof32(data.x >> 16);
+			shDC.y = f16tof32(data.y & 0xFFFF);
+			shDC.z = f16tof32(data.y >> 16);
+		}
 	}
 
-	// Load higher-order coefficients (indices 1..numTotalCoeffs-1)
-	int numHigherCoeffs = numTotalCoeffs - 1;  // Exclude DC
+	// Load higher-order coefficients
+	int numHigherCoeffs = numTotalCoeffs - 1;
 	[unroll]
 	for (int i = 0; i < 15; i++)
 	{
 		if (i < numHigherCoeffs)
 		{
-			uint o = baseOffset + (i + 1) * 6; // +1 to skip DC, 3 half floats = 6 bytes
-			uint2 data = shBuffer.Load2(o);
-			sh[i].x = f16tof32(data.x & 0xFFFF);
-			sh[i].y = f16tof32(data.x >> 16);
-			sh[i].z = f16tof32(data.y & 0xFFFF);
+			// Coeff (i+1) starts at byte offset (i+1) * 6 from baseOffset
+			uint byteOffset = baseOffset + (i + 1) * 6;
+
+			// Round down to 4-byte aligned address
+			uint alignedOffset = byteOffset & ~3u;
+			uint misalignment = byteOffset & 3u;  // 0 or 2 (since 6-byte stride)
+
+			// Load 12 bytes (3 uints) to cover all cases
+			uint3 data = shBuffer.Load3(alignedOffset);
+
+			if (misalignment == 0)
+			{
+				sh[i].x = f16tof32(data.x & 0xFFFF);
+				sh[i].y = f16tof32(data.x >> 16);
+				sh[i].z = f16tof32(data.y & 0xFFFF);
+			}
+			else // misalignment == 2
+			{
+				sh[i].x = f16tof32(data.x >> 16);
+				sh[i].y = f16tof32(data.y & 0xFFFF);
+				sh[i].z = f16tof32(data.y >> 16);
+			}
 		}
 		else
 		{

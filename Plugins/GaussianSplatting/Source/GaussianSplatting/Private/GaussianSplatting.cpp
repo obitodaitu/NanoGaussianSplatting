@@ -88,7 +88,9 @@ TAutoConsoleVariable<int32> CVarSHDebugMode(
 	TEXT(" 1: Show viewDirPLY as RGB (PLY space view direction)\n")
 	TEXT(" 2: Show viewDirWorld as RGB (world space view direction)\n")
 	TEXT(" 3: Show SH band 1 contribution only\n")
-	TEXT(" 4: Show DC color only (same as UseSHRendering 0)"),
+	TEXT(" 4: Show DC color only (same as UseSHRendering 0)\n")
+	TEXT(" 5: Show raw sh[0] values directly\n")
+	TEXT(" 6: Show magnitude of sh[0..2] as RGB (should be BLACK if no f_rest)"),
 	ECVF_RenderThreadSafe);
 
 // Export for other modules

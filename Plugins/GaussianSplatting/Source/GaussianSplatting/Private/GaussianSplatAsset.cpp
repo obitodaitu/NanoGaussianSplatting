@@ -461,6 +461,25 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 		return;
 	}
 
+	// Debug: Check if any SH coefficients are non-zero
+	int32 NonZeroSHCount = 0;
+	float MaxSHValue = 0.0f;
+	for (int32 i = 0; i < FMath::Min(InSplats.Num(), 100); i++)  // Check first 100 splats
+	{
+		const FGaussianSplatData& Splat = InSplats[i];
+		for (int32 c = 0; c < 15; c++)
+		{
+			float Mag = FMath::Abs(Splat.SH[c].X) + FMath::Abs(Splat.SH[c].Y) + FMath::Abs(Splat.SH[c].Z);
+			if (Mag > 0.0001f)
+			{
+				NonZeroSHCount++;
+				MaxSHValue = FMath::Max(MaxSHValue, Mag);
+			}
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("CompressSH: SHBands=%d, SplatCount=%d, InSplats.Num()=%d, NonZeroSH(first100)=%d, MaxSHValue=%.6f"),
+		SHBands, SplatCount, InSplats.Num(), NonZeroSHCount, MaxSHValue);
+
 	// Higher-order coefficients: 3 for band1, 8 for band1+2, 15 for band1+2+3
 	const int32 NumHigherCoeffs = (SHBands == 1) ? 3 : (SHBands == 2) ? 8 : 15;
 

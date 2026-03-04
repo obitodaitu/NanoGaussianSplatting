@@ -42,9 +42,10 @@ public:
 	 * @param FilePath Path to the .ply file
 	 * @param OutSplats Output array of splat data
 	 * @param OutError Error message if reading failed
+	 * @param OutSHBands Optional output for detected SH band count (0-3)
 	 * @return True if successful
 	 */
-	static bool ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError);
+	static bool ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands = nullptr);
 
 	/**
 	 * Check if a file is a valid PLY file

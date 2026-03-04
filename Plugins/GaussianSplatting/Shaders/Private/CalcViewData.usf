@@ -200,8 +200,22 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		else if (SHDebugMode == 4)
 		{
 			// Show DC only (same as UseSHRendering 0)
-			float3 dcColor = 0.5 + shDC;
+			float3 dcColor = 0.5 + SH_C0 * shDC;  // Fixed: was missing SH_C0
 			finalColor = pow(max(dcColor, 0.0), 2.2);
+		}
+		else if (SHDebugMode == 5)
+		{
+			// Show raw sh[0] values directly (no view direction, no scaling)
+			// Map from typical SH range [-2, 2] to [0, 1] for visualization
+			finalColor = sh[0] * 0.25 + 0.5;
+		}
+		else if (SHDebugMode == 6)
+		{
+			// Show magnitude of sh[0..2] - should be black if no f_rest data
+			float mag0 = length(sh[0]);
+			float mag1 = length(sh[1]);
+			float mag2 = length(sh[2]);
+			finalColor = float3(mag0, mag1, mag2);  // RGB = magnitudes of first 3 SH coeffs
 		}
 		else
 		{
