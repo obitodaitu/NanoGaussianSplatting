@@ -1328,12 +1328,24 @@ void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 {
 	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: DestroyRenderThreadResources called!"));
 
-	// Unregister from view extension
+	// CRITICAL: Mark as pending destruction FIRST, before any other operations.
+	// This prevents render commands that have already captured a pointer to this proxy
+	// from accessing our resources. The atomic flag is checked by IsValidForRendering().
+	MarkPendingDestruction();
+
+	// Unregister from view extension (under lock, so no new render passes will see us)
 	FGaussianSplatViewExtension* ViewExtension = FGaussianSplatViewExtension::Get();
 	if (ViewExtension)
 	{
 		ViewExtension->UnregisterProxy(const_cast<FGaussianSplatSceneProxy*>(this));
 	}
+
+	// Flush any pending render commands that might be referencing our resources.
+	// This ensures that any RDG passes that captured our proxy pointer have completed
+	// before we release the GPU resources.
+	// Note: We're already on the render thread, so this flushes GPU work.
+	FRHICommandListImmediate& RHICmdList = FRHICommandListImmediate::Get();
+	RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 
 	if (GPUResources)
 	{
@@ -1345,6 +1357,12 @@ void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 
 void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RHICmdList)
 {
+	// Safety check: don't access resources if proxy is being destroyed
+	if (bPendingDestruction.load(std::memory_order_acquire))
+	{
+		return;
+	}
+
 	if (!GPUResources || GPUResources->ColorTextureSRV.IsValid())
 	{
 		// Already initialized or no resources

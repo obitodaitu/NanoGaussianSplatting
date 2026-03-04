@@ -9,6 +9,7 @@
 #include "RenderResource.h"
 #include "RHI.h"
 #include "RHIResources.h"
+#include <atomic>
 
 class UGaussianSplatComponent;
 class UGaussianSplatAsset;
@@ -387,7 +388,7 @@ public:
 #endif
 	//~ End FPrimitiveSceneProxy Interface
 
-	/** Get GPU resources */
+	/** Get GPU resources (may return nullptr if pending destruction) */
 	FGaussianSplatGPUResources* GetGPUResources() const { return GPUResources; }
 
 	/** Try to initialize color texture SRV if not already done */
@@ -401,7 +402,35 @@ public:
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
 
+	/** Check if this proxy is safe to use for rendering.
+	 *  Returns false if proxy is being destroyed or has invalid resources.
+	 *  Thread-safe - can be called from render thread.
+	 */
+	bool IsValidForRendering() const
+	{
+		// Check destruction flag first (atomic, no lock needed)
+		if (bPendingDestruction.load(std::memory_order_acquire))
+		{
+			return false;
+		}
+		// Then check resources
+		return GPUResources != nullptr && GPUResources->IsValid();
+	}
+
+	/** Mark this proxy as pending destruction. Called at start of DestroyRenderThreadResources. */
+	void MarkPendingDestruction()
+	{
+		bPendingDestruction.store(true, std::memory_order_release);
+	}
+
 private:
+	/** Atomic flag indicating this proxy is being destroyed.
+	 *  Set at the start of DestroyRenderThreadResources to prevent
+	 *  render commands from accessing resources during/after destruction.
+	 */
+	std::atomic<bool> bPendingDestruction{false};
+
+
 	/** GPU resources */
 	FGaussianSplatGPUResources* GPUResources = nullptr;
 

@@ -292,16 +292,70 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 				if (!SceneView) return;
 				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering_Global);
 
-				// Initialize color textures (deferred init)
+				// SAFETY CHECK: Re-validate all proxies before rendering.
+				// Proxies may have been destroyed between when we built VisibleProxies
+				// and when this lambda executes (RDG deferred execution).
+				// We need to rebuild the list with only valid proxies.
+				TArray<FProxyRenderInfo> ValidProxies;
+				ValidProxies.Reserve(VisibleProxies.Num());
+				uint32 NewTotalSplatCount = 0;
+
 				for (const auto& Info : VisibleProxies)
+				{
+					// Check if proxy is still valid (not destroyed or pending destruction)
+					if (Info.Proxy && Info.Proxy->IsValidForRendering())
+					{
+						FProxyRenderInfo ValidInfo = Info;
+						ValidInfo.GlobalBaseOffset = NewTotalSplatCount;
+						NewTotalSplatCount += (uint32)Info.Proxy->GetSplatCount();
+						ValidProxies.Add(ValidInfo);
+					}
+				}
+
+				// If no valid proxies remain, skip rendering entirely
+				if (ValidProxies.Num() == 0 || NewTotalSplatCount == 0)
+				{
+					return;
+				}
+
+				// Invalidate cache skip if the proxy list changed (some proxies were destroyed)
+				// This ensures we don't use stale cached data when the scene has changed
+				bool bCanSkipAdjusted = bCanSkip;
+				if (ValidProxies.Num() != VisibleProxies.Num() || NewTotalSplatCount != TotalSplatCount)
+				{
+					bCanSkipAdjusted = false;
+					// Also invalidate the global accumulator cache since proxy set changed
+					RawAccumulator->bHasCachedSortData = false;
+				}
+
+				// Initialize color textures (deferred init) - only for valid proxies
+				for (const auto& Info : ValidProxies)
 				{
 					Info.Proxy->TryInitializeColorTexture(RHICmdList);
 				}
 
 				// Ensure global buffers are large enough for all splats
-				RawAccumulator->ResizeIfNeeded(RHICmdList, TotalSplatCount);
+				RawAccumulator->ResizeIfNeeded(RHICmdList, NewTotalSplatCount);
 
-				if (bAllNanite)
+				// Re-check if all valid proxies support Nanite compaction
+				bool bAllValidNanite = true;
+				for (const auto& Info : ValidProxies)
+				{
+					FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+					if (!GPUResources || !GPUResources->bEnableNanite || !GPUResources->bHasClusterData || !GPUResources->bSupportsCompaction)
+					{
+						bAllValidNanite = false;
+						break;
+					}
+				}
+
+				// Cap to MAX_PROXY_COUNT
+				if ((uint32)ValidProxies.Num() > FGaussianGlobalAccumulator::MAX_PROXY_COUNT)
+				{
+					bAllValidNanite = false;
+				}
+
+				if (bAllValidNanite)
 				{
 					//==================================================
 					// GLOBAL + COMPACTION PATH
@@ -313,14 +367,15 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					// Ensure fixed-size prefix-sum buffers exist (allocated once)
 					RawAccumulator->EnsureCompactionBuffersAllocated(RHICmdList);
 
-					if (!bCanSkip)
+					if (!bCanSkipAdjusted)
 					{
 						// --------------------------------------------------
 						// Phase 0: Per-proxy culling + compaction + indirect args
 						// --------------------------------------------------
-						for (const auto& Info : VisibleProxies)
+						for (const auto& Info : ValidProxies)
 						{
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 							int32 SplatCount = Info.Proxy->GetSplatCount();
 							int32 OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
 
@@ -341,10 +396,11 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						// --------------------------------------------------
 						// Phase 1: Gather visible counts + GPU prefix sum
 						// --------------------------------------------------
-						int32 NumProxies = VisibleProxies.Num();
+						int32 NumProxies = ValidProxies.Num();
 						for (int32 i = 0; i < NumProxies; i++)
 						{
-							FGaussianSplatGPUResources* GPUResources = VisibleProxies[i].Proxy->GetGPUResources();
+							FGaussianSplatGPUResources* GPUResources = ValidProxies[i].Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 							FGaussianSplatRenderer::DispatchGatherVisibleCount(
 								RHICmdList, GPUResources, RawAccumulator, i);
 						}
@@ -359,8 +415,9 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						// --------------------------------------------------
 						for (int32 i = 0; i < NumProxies; i++)
 						{
-							const auto& Info = VisibleProxies[i];
+							const auto& Info = ValidProxies[i];
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 							int32 SplatCount = Info.Proxy->GetSplatCount();
 							int32 OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
 
@@ -386,12 +443,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 						// Update caches
 						RawAccumulator->bHasCachedSortData = true;
-						RawAccumulator->CachedTotalSplatCount = TotalSplatCount;
+						RawAccumulator->CachedTotalSplatCount = NewTotalSplatCount;
 						RawAccumulator->CachedViewProjectionMatrix = CurrentVP;
 
-						for (const auto& Info : VisibleProxies)
+						for (const auto& Info : ValidProxies)
 						{
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 							GPUResources->CachedViewProjectionMatrix = CurrentVP;
 							GPUResources->CachedLocalToWorld = Info.LocalToWorld;
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
@@ -413,23 +471,23 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					//==================================================
 					// NON-COMPACTION GLOBAL PATH (fallback)
 					// Not all proxies are Nanite-enabled.
-					// Sorts all TotalSplatCount splats (no compaction benefit).
+					// Sorts all NewTotalSplatCount splats (no compaction benefit).
 					// Still provides correct cross-tile alpha blending.
 					//==================================================
 
-					// Cap TotalSplatCount to render budget (CPU-side enforcement)
-					uint32 CappedTotalSplatCount = TotalSplatCount;
+					// Cap splat count to render budget (CPU-side enforcement)
+					uint32 CappedTotalSplatCount = NewTotalSplatCount;
 					if (MaxRenderBudget > 0 && CappedTotalSplatCount > MaxRenderBudget)
 					{
 						CappedTotalSplatCount = MaxRenderBudget;
 					}
 
-					if (!bCanSkip)
+					if (!bCanSkipAdjusted)
 					{
 						// --------------------------------------------------
 						// Phase 1: Per-proxy ClusterCulling + CalcViewData
 						// --------------------------------------------------
-						for (const auto& Info : VisibleProxies)
+						for (const auto& Info : ValidProxies)
 						{
 							// Skip proxies that would write beyond the render budget
 							if (MaxRenderBudget > 0 && Info.GlobalBaseOffset >= MaxRenderBudget)
@@ -438,6 +496,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							}
 
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 
 							// Cluster culling for Nanite-enabled proxies
 							if (GPUResources->bEnableNanite && GPUResources->bHasClusterData)
@@ -468,12 +527,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 						// Update caches
 						RawAccumulator->bHasCachedSortData = true;
-						RawAccumulator->CachedTotalSplatCount = TotalSplatCount;
+						RawAccumulator->CachedTotalSplatCount = NewTotalSplatCount;
 						RawAccumulator->CachedViewProjectionMatrix = CurrentVP;
 
-						for (const auto& Info : VisibleProxies)
+						for (const auto& Info : ValidProxies)
 						{
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;  // Extra safety check
 							GPUResources->CachedViewProjectionMatrix = CurrentVP;
 							GPUResources->CachedLocalToWorld = Info.LocalToWorld;
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
