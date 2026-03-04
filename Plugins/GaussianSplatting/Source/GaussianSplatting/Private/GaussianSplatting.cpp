@@ -69,30 +69,6 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
 	ECVF_RenderThreadSafe);
 
-/** Enable view-dependent spherical harmonics (f_rest) rendering */
-TAutoConsoleVariable<int32> CVarUseSHRendering(
-	TEXT("gs.UseSHRendering"),
-	1,
-	TEXT("Enable view-dependent color rendering using spherical harmonics (f_rest).\n")
-	TEXT("When enabled, splat colors change based on viewing angle for more realistic appearance.\n")
-	TEXT(" 0: Off - use base color (DC component only, faster)\n")
-	TEXT(" 1: On - evaluate spherical harmonics per splat (default, higher quality)"),
-	ECVF_RenderThreadSafe);
-
-/** Debug mode for SH rendering - visualize intermediate values */
-TAutoConsoleVariable<int32> CVarSHDebugMode(
-	TEXT("gs.SHDebugMode"),
-	0,
-	TEXT("Debug visualization for SH rendering.\n")
-	TEXT(" 0: Off - normal rendering\n")
-	TEXT(" 1: Show viewDirPLY as RGB (PLY space view direction)\n")
-	TEXT(" 2: Show viewDirWorld as RGB (world space view direction)\n")
-	TEXT(" 3: Show SH band 1 contribution only\n")
-	TEXT(" 4: Show DC color only (same as UseSHRendering 0)\n")
-	TEXT(" 5: Show raw sh[0] values directly\n")
-	TEXT(" 6: Show magnitude of sh[0..2] as RGB (should be BLACK if no f_rest)"),
-	ECVF_RenderThreadSafe);
-
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 
