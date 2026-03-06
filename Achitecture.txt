@@ -2,20 +2,41 @@
 [To Do list]
 ***先做一個tile切割器，再開nanite跟level streaming就好,地形肯定要切成多塊單元，不管是asset還是地形邏輯其實都一樣
 ***整理筆記
-***Demo - 野柳+小馬
+***Demo - 野柳(FPV style)+小馬
 ***條列有開放出來的重要API > list what feature exposed to blueprint
 **important variable to details panel
 ***lower VRAM usage > compare to sparkjs and unity's design
+***換level VRAM還會在?
+***確定有做frustum culling, occlusion culling
+***上架切割器
+***make sure we output depth pass properly and can be seen in view mode
+***加sky的ply
+***目前TSR會拖累渲染效能，GS其實也不需要TSR，看能不能上GS不參與TSR > 如果沒有很嚴重就算了
 **************************************************************************************************
 
 
 
 
-[切割器]
-	- 目前看起來直接寫custom tool最容易
-	- 
 
 
+
+
+
+-----------------------------------------------------------------------------------
+[Crash Report - didn't add new assets]
+LoginId:9f446d104fec595e022e4284d6387af8
+EpicAccountId:e3929da773ea4842bdba01e8d536a4f7
+
+Unhandled Exception: EXCEPTION_ACCESS_VIOLATION reading address 0xffffffffffffffff
+
+UnrealEditor_RenderCore
+UnrealEditor_RenderCore
+UnrealEditor_RenderCore
+UnrealEditor_RenderCore
+UnrealEditor_Core
+UnrealEditor_Core
+UnrealEditor_Core
+UnrealEditor_Core
 
 
 
