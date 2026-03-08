@@ -1805,11 +1805,11 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 
 		// LOD selection parameters
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
-		// Use FViewInfo::ViewRect for screen-based LOD calculations (accounts for screen percentage)
-		const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
-		FIntRect ViewRect = ViewInfo.ViewRect;
-		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
-		CullingParams.ErrorThreshold = FMath::Max(0.1f, ErrorThreshold);
+		// Use projection matrix scaling factor for FOV-based LOD (resolution-independent, like Nanite)
+		// ProjMatrix[1][1] = 1/tan(HalfFOV_Y), depends only on FOV, not viewport pixel size
+		const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
+		CullingParams.ScreenHeight = FMath::Max(ProjMatrix.M[0][0], ProjMatrix.M[1][1]);
+		CullingParams.ErrorThreshold = FMath::Max(0.001f, ErrorThreshold);
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)

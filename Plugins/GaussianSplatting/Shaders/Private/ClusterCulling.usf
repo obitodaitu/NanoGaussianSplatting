@@ -52,8 +52,8 @@ uint LeafClusterCount;
 
 // LOD selection parameters
 float3 CameraPosition;    // World space camera position
-float ScreenHeight;       // Screen height in pixels
-float ErrorThreshold;     // Max acceptable screen-space error in pixels (default: 1.0)
+float ScreenHeight;       // Projection scale factor: max(ProjMatrix[0][0], ProjMatrix[1][1]), FOV-based, resolution-independent
+float ErrorThreshold;     // Max acceptable projected error (resolution-independent)
 float LODBias;            // Bias to shift LOD selection (+/- to prefer coarser/finer)
 
 // Frustum planes in world space (extracted from ViewProjection matrix)
@@ -80,8 +80,9 @@ bool UnpackUseLOD(uint packed)
 	return (packed & 0x01000000) != 0;
 }
 
-// Calculate screen-space projected error
-// Returns error in pixels
+// Calculate projected error (resolution-independent, like Nanite)
+// ScreenHeight here is actually max(ProjMatrix[0][0], ProjMatrix[1][1]) = 1/tan(HalfFOV)
+// This depends only on FOV, not viewport pixel size, so LOD won't change on viewport resize
 float CalculateProjectedError(float worldSpaceError, float distanceToCamera)
 {
 	if (distanceToCamera < 0.001)
@@ -89,8 +90,8 @@ float CalculateProjectedError(float worldSpaceError, float distanceToCamera)
 		return 1000000.0; // Very close, use finest LOD
 	}
 
-	// Simple projection: error_pixels = (error_world / distance) * screen_height / 2
-	// The /2 factor approximates FOV (assumes ~90 degree FOV)
+	// projected_error = (error_world / distance) * projection_scale * 0.5
+	// projection_scale = max(Proj[0][0], Proj[1][1]) = 1/tan(HalfFOV)
 	return (worldSpaceError / distanceToCamera) * ScreenHeight * 0.5;
 }
 

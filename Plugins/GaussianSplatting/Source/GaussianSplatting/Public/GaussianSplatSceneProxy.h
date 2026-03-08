@@ -443,7 +443,7 @@ private:
 	int32 SHOrder = 3;
 	float OpacityScale = 1.0f;
 	float SplatScale = 1.0f;
-	float LODErrorThreshold = 32.0f;
+	float LODErrorThreshold = 0.03f;
 	bool bEnableFrustumCulling = true;
 
 #if WITH_EDITOR
