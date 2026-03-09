@@ -230,7 +230,8 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		}
 
 		// Check camera-static skip: if nothing has changed, skip Phase 1+2 and reuse cached sort
-		FMatrix CurrentVP = SceneView->ViewMatrices.GetViewProjectionMatrix();
+		// Use ProjectionNoAAMatrix to ignore TSR/TAA per-frame jitter that changes every frame
+		FMatrix CurrentVP = SceneView->ViewMatrices.GetViewMatrix() * SceneView->ViewMatrices.GetProjectionNoAAMatrix();
 		int32 CurrentDebugMode = DebugMode;
 		int32 CurrentDebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 
