@@ -27,6 +27,76 @@
 (Appearance)
 - the outline/shape of the asset will be come blury
 **************************************************************************************************
+Test same scene in different platform > make sure my performance is better.
+key technique
+- fixed splat rendering budget
+- Nanite LOD cluster
+- GPU compact
+- merge draw call
+- radix sort
+
+
+[Learn from Spark JS > not sure all of them are useful]
+  ---
+  HIGH IMPACT - Should Implement
+
+  1. 16-bit Bucket Sort (O(n) linear time)
+  - SparkJS uses 16-bit depth with bucket sort (65K buckets, single pass)
+  - Your plugin uses 32-bit radix sort with 4 passes (Count→PrefixSum→DigitPrefixSum→Scatter × 4)
+  - Potential win: 4x fewer passes, simpler algorithm
+  - Practicality: HIGH - Depth precision of 16-bit is sufficient for most scenes
+
+  2. Fixed Splat Budget with Priority-Based LOD
+  - SparkJS maintains CONSTANT N splats per frame regardless of scene size
+  - Your plugin has MaxRenderBudget but doesn't prioritize which splats to keep
+  - SparkJS expands nodes by screen-space pixel scale, stops when budget reached
+  - Potential win: Predictable frame time, no performance cliff
+  - Practicality: MEDIUM-HIGH - Requires modifying cluster traversal to use priority queue
+
+  3. Early Opacity/Size Culling BEFORE Full Projection
+  - SparkJS culls in vertex shader: if (rgba.a < minAlpha) and size limits
+  - Your CalcViewData does full covariance projection, THEN frustum cull
+  - Potential win: Skip expensive covariance math for tiny/transparent splats
+  - Practicality: HIGH - Simple check before CalcCovariance3D
+
+  4. Extended Opacity for Merged LOD Splats
+  - SparkJS allows opacity > 1.0 for merged splats (accumulated coverage)
+  - Your LOD splats use standard opacity, potentially losing coverage
+  - Potential win: Better visual quality at LOD transitions
+  - Practicality: MEDIUM - Requires asset format change and shader update
+
+  ---
+  MEDIUM IMPACT - Consider Implementing
+
+  5. Foveated Detail Allocation
+  - SparkJS: outside_foveate reduces detail outside frustum, behind_foveate for behind camera
+  - Allocates more budget to visible/important regions
+  - Practicality: MEDIUM - Useful for VR, adds complexity for standard rendering
+
+  6. Exponential LOD Base (1.5 instead of 2.0)
+  - SparkJS uses 1.5x between LOD levels for smoother transitions
+  - Standard octree uses 2x, causes more noticeable popping
+  - Practicality: LOW-MEDIUM - Requires rebuilding cluster hierarchy
+
+  7. Stochastic Rendering (Skip Sorting)
+  - SparkJS offers mode that skips sorting entirely
+  - Uses per-pixel randomization for alpha blending
+  - Trade-off: Slight noise vs. sorting cost eliminated
+  - Practicality: LOW - Risky for production quality, good for previews
+
+  ---
+  Recommended Priority Order
+
+  1. 16-bit Bucket Sort - Biggest single optimization, straightforward
+  2. Early Opacity/Size Culling - Easy to add, immediate benefit
+  3. Priority-Based Fixed Budget - Guarantees constant frame time
+  4. Extended Opacity - Better LOD quality
+
+
+
+
+
+
 
 
 
