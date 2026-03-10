@@ -370,9 +370,23 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					{
 						// --------------------------------------------------
 						// Phase 0: Per-proxy culling + compaction + indirect args
+						// Early-out: skip proxies once cumulative splat count
+						// exceeds MaxRenderBudget (CPU-side estimate using total
+						// splat count as conservative upper bound for visible count).
+						// Proxies are sorted by distance, so closer ones get priority.
 						// --------------------------------------------------
+						int32 NumProcessedProxies = 0;
+						uint32 CumulativeSplatCount = 0;
+
 						for (const auto& Info : ValidProxies)
 						{
+							// Budget early-out: if cumulative total already exceeds budget,
+							// skip culling/compaction for remaining (farther) proxies
+							if (MaxRenderBudget > 0 && CumulativeSplatCount >= MaxRenderBudget)
+							{
+								break;
+							}
+
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
 							if (!GPUResources) continue;  // Extra safety check
 							int32 SplatCount = Info.Proxy->GetSplatCount();
@@ -390,13 +404,16 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 							// PrepareIndirectArgs → fills IndirectDispatchArgsBuffer for CalcViewData
 							FGaussianSplatRenderer::DispatchPrepareIndirectArgs(RHICmdList, GPUResources);
+
+							CumulativeSplatCount += (uint32)SplatCount;
+							NumProcessedProxies++;
 						}
 
 						// --------------------------------------------------
 						// Phase 1: Gather visible counts + GPU prefix sum
+						// Only gather from proxies that were actually processed
 						// --------------------------------------------------
-						int32 NumProxies = ValidProxies.Num();
-						for (int32 i = 0; i < NumProxies; i++)
+						for (int32 i = 0; i < NumProcessedProxies; i++)
 						{
 							FGaussianSplatGPUResources* GPUResources = ValidProxies[i].Proxy->GetGPUResources();
 							if (!GPUResources) continue;  // Extra safety check
@@ -406,13 +423,14 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 						// Single 1-thread dispatch: computes prefix sums + writes all indirect args
 						FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
-							RHICmdList, RawAccumulator, NumProxies, MaxRenderBudget);
+							RHICmdList, RawAccumulator, NumProcessedProxies, MaxRenderBudget);
 
 						// --------------------------------------------------
 						// Phase 2: Per-proxy CalcViewData → global buffer
 						// (indirect dispatch, only visible splats per proxy)
+						// Only process proxies that went through culling/compaction
 						// --------------------------------------------------
-						for (int32 i = 0; i < NumProxies; i++)
+						for (int32 i = 0; i < NumProcessedProxies; i++)
 						{
 							const auto& Info = ValidProxies[i];
 							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
@@ -440,24 +458,34 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
 						FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);
 
-						// Update caches
+						// Update caches — only for processed proxies
 						RawAccumulator->bHasCachedSortData = true;
 						RawAccumulator->CachedTotalSplatCount = NewTotalSplatCount;
 						RawAccumulator->CachedViewProjectionMatrix = CurrentVP;
 
-						for (const auto& Info : ValidProxies)
+						for (int32 i = 0; i < ValidProxies.Num(); i++)
 						{
-							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
-							if (!GPUResources) continue;  // Extra safety check
-							GPUResources->CachedViewProjectionMatrix = CurrentVP;
-							GPUResources->CachedLocalToWorld = Info.LocalToWorld;
-							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
-							GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
+							FGaussianSplatGPUResources* GPUResources = ValidProxies[i].Proxy->GetGPUResources();
+							if (!GPUResources) continue;
 
-							GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
-							GPUResources->CachedDebugMode = CurrentDebugMode;
-							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
-							GPUResources->bHasCachedSortData = true;
+							if (i < NumProcessedProxies)
+							{
+								const auto& Info = ValidProxies[i];
+								GPUResources->CachedViewProjectionMatrix = CurrentVP;
+								GPUResources->CachedLocalToWorld = Info.LocalToWorld;
+								GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
+								GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
+								GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
+								GPUResources->CachedDebugMode = CurrentDebugMode;
+								GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
+								GPUResources->bHasCachedSortData = true;
+							}
+							else
+							{
+								// Invalidate cache for budget-skipped proxies so they
+								// don't block the camera-static skip check
+								GPUResources->bHasCachedSortData = false;
+							}
 						}
 					}
 
