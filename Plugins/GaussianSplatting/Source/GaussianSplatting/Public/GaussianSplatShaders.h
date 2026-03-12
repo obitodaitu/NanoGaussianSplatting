@@ -511,6 +511,78 @@ class FGlobalClusterCullingCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
+// Global Compact Splats (Stage 3 -- shadow mode)
+//----------------------------------------------------------------------
+
+/**
+ * Reset shader for global compact splats shadow counters.
+ */
+class FGlobalCompactSplatsResetCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGlobalCompactSplatsResetCS);
+	SHADER_USE_PARAMETER_STRUCT(FGlobalCompactSplatsResetCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Shadow outputs
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ShadowVisibleCountArray)
+		// Counts
+		SHADER_PARAMETER(uint32, ProxyCount)
+		SHADER_PARAMETER(uint32, TotalSplatCount)
+		SHADER_PARAMETER(uint32, UseLODRendering)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
+	}
+};
+
+/**
+ * Global compact splats compute shader -- single dispatch for all proxies.
+ * Uses binary search on ProxyMetadataBuffer to find per-splat proxy ownership.
+ * Reads Stage 2 shadow bitmaps for visibility. Validates against per-proxy counts.
+ */
+class FGlobalCompactSplatsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGlobalCompactSplatsCS);
+	SHADER_USE_PARAMETER_STRUCT(FGlobalCompactSplatsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Global input buffers
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, GlobalSplatClusterIndexBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FProxyGPUMetadata>, ProxyMetadataBuffer)
+		// Shadow bitmaps from Stage 2 (read-only)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ShadowClusterVisibilityBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ShadowSelectedClusterBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ShadowLODClusterSelectedBitmap)
+		// Shadow outputs
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ShadowCompactedSplatIndices)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ShadowVisibleCountArray)
+		// Counts
+		SHADER_PARAMETER(uint32, ProxyCount)
+		SHADER_PARAMETER(uint32, TotalSplatCount)
+		SHADER_PARAMETER(uint32, UseLODRendering)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
+	}
+};
+
+//----------------------------------------------------------------------
 // Global Accumulator + Compaction prefix-sum shaders
 //----------------------------------------------------------------------
 

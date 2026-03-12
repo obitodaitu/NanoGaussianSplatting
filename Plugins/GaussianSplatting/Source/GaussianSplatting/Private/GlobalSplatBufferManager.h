@@ -49,8 +49,8 @@ struct FProxyGPUMetadata
 	uint32 GlobalLeafClusterEnd;         // Exclusive end of this proxy's leaf clusters in global space
 	uint32 GlobalSplatEnd;               // Exclusive end of this proxy's splats in global space
 
-	// Padding to reach 128 bytes
-	uint32 Pad[1];
+	// Per-proxy LOD parameters (must match per-proxy culling for Stage 3 validation)
+	float ErrorThreshold;                // LOD error threshold from proxy
 };
 
 static_assert(sizeof(FProxyGPUMetadata) == 128, "FProxyGPUMetadata must be 128 bytes — HLSL struct must match");
@@ -132,6 +132,21 @@ struct FGlobalSplatBufferManager
 	bool bShadowBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
+	// Stage 3: Shadow compaction buffers (global compact splats validation)
+	//------------------------------------------------------------------------
+
+	/** Shadow compacted splat indices — worst case TotalSplatCount entries. */
+	FBufferRHIRef ShadowCompactedSplatIndices;
+	FUnorderedAccessViewRHIRef ShadowCompactedSplatIndicesUAV;
+
+	/** Shadow visible count array — one uint32 per proxy. */
+	FBufferRHIRef ShadowVisibleCountArray;
+	FUnorderedAccessViewRHIRef ShadowVisibleCountArrayUAV;
+	FShaderResourceViewRHIRef ShadowVisibleCountArraySRV;
+
+	bool bShadowCompactBuffersAllocated = false;
+
+	//------------------------------------------------------------------------
 	// CPU-side state
 	//------------------------------------------------------------------------
 
@@ -187,6 +202,25 @@ struct FGlobalSplatBufferManager
 	void DispatchGlobalClusterCulling(
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
+		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
+
+	//------------------------------------------------------------------------
+	// Stage 3: Global Compact Splats (shadow mode)
+	//------------------------------------------------------------------------
+
+	/**
+	 * Allocate shadow compaction buffers.
+	 * Called lazily on first dispatch. Resized when totals change.
+	 */
+	void EnsureShadowCompactBuffers(FRHICommandListImmediate& RHICmdList);
+
+	/**
+	 * Dispatch the global compact splats shader (shadow mode).
+	 * Called AFTER per-proxy compaction so both results exist for comparison.
+	 * Uses shadow bitmaps from Stage 2 (DispatchGlobalClusterCulling must run first).
+	 */
+	void DispatchGlobalCompactSplats(
+		FRHICommandListImmediate& RHICmdList,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }

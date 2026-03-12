@@ -190,7 +190,7 @@ PASS CONDITION before moving to Stage 2:
     - Verified across multiple frames (transforms update correctly)
 
 --------------------------------------------------------------------------------
-STAGE 2 -- Global Cluster Culling (Shadow)                       [ ] Not started
+STAGE 2 -- Global Cluster Culling (Shadow)                       [x] Complete
 --------------------------------------------------------------------------------
 
 GOAL: Prove the GlobalClusterCulling shader produces correct visibility results.
@@ -245,7 +245,7 @@ PASS CONDITION before moving to Stage 3:
     - Verified across multiple frames
 
 --------------------------------------------------------------------------------
-STAGE 3 -- Global Compact Splats (Shadow)                        [ ] Not started
+STAGE 3 -- Global Compact Splats (Shadow)                        [x] In progress
 --------------------------------------------------------------------------------
 
 GOAL: Prove GlobalCompactSplats correctly identifies visible splats per proxy.
@@ -436,8 +436,8 @@ PASS CONDITION:
 ================================================================================
 
   STAGE 1 -- CPU Buffer Infrastructure          [x] Complete
-  STAGE 2 -- Global Cluster Culling (Shadow)    [ ] Not started
-  STAGE 3 -- Global Compact Splats (Shadow)     [ ] Not started
+  STAGE 2 -- Global Cluster Culling (Shadow)    [x] Complete
+  STAGE 3 -- Global Compact Splats (Shadow)     [x] In progress
   STAGE 4 -- Repack + Global CalcViewData       [ ] Not started
   STAGE 5 -- Full Switchover                    [ ] Not started
   STAGE 6 -- Cleanup                            [ ] Not started

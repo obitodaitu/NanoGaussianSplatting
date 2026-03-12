@@ -22,6 +22,10 @@ IMPLEMENT_GLOBAL_SHADER(FClusterCullingCS, "/Plugin/GaussianSplatting/Private/Cl
 IMPLEMENT_GLOBAL_SHADER(FGlobalClusterCullingResetCS, "/Plugin/GaussianSplatting/Private/GlobalClusterCulling.usf", "ResetCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FGlobalClusterCullingCS, "/Plugin/GaussianSplatting/Private/GlobalClusterCulling.usf", "MainCS", SF_Compute);
 
+// Global compact splats (Stage 3)
+IMPLEMENT_GLOBAL_SHADER(FGlobalCompactSplatsResetCS, "/Plugin/GaussianSplatting/Private/GlobalCompactSplats.usf", "ResetCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FGlobalCompactSplatsCS, "/Plugin/GaussianSplatting/Private/GlobalCompactSplats.usf", "MainCS", SF_Compute);
+
 // Splat compaction shaders (GPU-driven work reduction)
 IMPLEMENT_GLOBAL_SHADER(FCompactSplatsCS, "/Plugin/GaussianSplatting/Private/CompactSplats.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPrepareIndirectArgsCS, "/Plugin/GaussianSplatting/Private/PrepareIndirectArgs.usf", "MainCS", SF_Compute);

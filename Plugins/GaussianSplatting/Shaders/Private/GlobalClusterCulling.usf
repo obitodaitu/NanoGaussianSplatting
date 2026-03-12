@@ -36,7 +36,7 @@ struct FProxyMetadata
 	uint GlobalLeafClusterEnd;                // 4
 	uint GlobalSplatEnd;                      // 4
 
-	uint Pad0;                                // 4
+	float ProxyErrorThreshold;                // 4
 	// Total: 128 bytes
 };
 
@@ -247,7 +247,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
 			projectedError = projectedError * exp(-LODBias * 0.1);
 
-			if (projectedError < ErrorThreshold)
+			if (projectedError < metadata.ProxyErrorThreshold)
 			{
 				selectedClusterID = globalParentIdx;
 				useLOD = true;

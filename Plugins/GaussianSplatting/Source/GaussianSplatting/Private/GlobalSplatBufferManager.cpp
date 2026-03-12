@@ -91,6 +91,7 @@ void FGlobalSplatBufferManager::RebuildStaticBuffers(
 
 	// Invalidate shadow buffers since sizes may change
 	bShadowBuffersAllocated = false;
+	bShadowCompactBuffersAllocated = false;
 
 	TotalSplatCount          = 0;
 	TotalClusterCount        = 0;
@@ -347,7 +348,7 @@ void FGlobalSplatBufferManager::UploadProxyMetadata(
 
 		M.GlobalLeafClusterEnd = CumulativeLeafClusters;
 		M.GlobalSplatEnd       = CumulativeSplats;
-		M.Pad[0]               = 0;
+		M.ErrorThreshold       = FMath::Max(0.001f, Proxy->GetLODErrorThreshold());
 	}
 
 	// Stage 1 verification log (only on rebuild, to avoid per-frame spam)
@@ -442,6 +443,14 @@ void FGlobalSplatBufferManager::Release()
 	ShadowLODSplatTotalBufferUAV.SafeRelease();
 	ShadowValidationStagingBuffer.SafeRelease();
 	bShadowBuffersAllocated = false;
+
+	// Stage 3: Shadow compaction buffers
+	ShadowCompactedSplatIndices.SafeRelease();
+	ShadowCompactedSplatIndicesUAV.SafeRelease();
+	ShadowVisibleCountArray.SafeRelease();
+	ShadowVisibleCountArrayUAV.SafeRelease();
+	ShadowVisibleCountArraySRV.SafeRelease();
+	bShadowCompactBuffersAllocated = false;
 
 	LastProxySet.Empty();
 	TotalSplatCount           = 0;
@@ -614,7 +623,7 @@ void FGlobalSplatBufferManager::DispatchGlobalClusterCulling(
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 		const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
 		CullingParams.ScreenHeight = FMath::Max(ProjMatrix.M[0][0], ProjMatrix.M[1][1]);
-		CullingParams.ErrorThreshold = FMath::Max(0.001f, 0.1f);  // Default threshold; proxies may vary
+		CullingParams.ErrorThreshold = 0.1f;  // Fallback only — shader reads per-proxy threshold from metadata.ProxyErrorThreshold
 		CullingParams.LODBias = 0.0f;
 		CullingParams.UseLODRendering = 1;
 		CullingParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
@@ -724,6 +733,216 @@ void FGlobalSplatBufferManager::DispatchGlobalClusterCulling(
 		UE_LOG(LogTemp, Log,
 			TEXT("[GS Stage2] Total: old=%u  new(bitmap)=%u  new(counter)=%u  %s"),
 			OldTotalVisible, NewTotalVisible, GlobalTotalVisible,
+			bAllMatch ? TEXT("All proxies MATCH") : TEXT("MISMATCH DETECTED"));
+	}
+}
+
+// ============================================================================
+// Stage 3: EnsureShadowCompactBuffers
+// ============================================================================
+
+static TAutoConsoleVariable<int32> CVarValidateGlobalCompact(
+	TEXT("gs.ValidateGlobalCompact"),
+	1,
+	TEXT("Stage 3: Compare per-proxy visible splat counts against global compact.\n")
+	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
+	ECVF_RenderThreadSafe);
+
+void FGlobalSplatBufferManager::EnsureShadowCompactBuffers(FRHICommandListImmediate& RHICmdList)
+{
+	if (bShadowCompactBuffersAllocated)
+	{
+		return;
+	}
+
+	const uint32 UintStride = sizeof(uint32);
+
+	// Compacted splat indices: worst case = TotalSplatCount
+	uint32 MaxSplats = FMath::Max(TotalSplatCount, 1u);
+	ShadowCompactedSplatIndices = CreateStructuredBuffer(RHICmdList, TEXT("ShadowCompactedSplatIndices"), UintStride, MaxSplats);
+	ShadowCompactedSplatIndicesUAV = RHICmdList.CreateUnorderedAccessView(
+		ShadowCompactedSplatIndices,
+		FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(UintStride));
+
+	// Visible count array: one uint32 per proxy
+	uint32 ProxyCount = FMath::Max(GetProxyCount(), 1u);
+	ShadowVisibleCountArray = CreateStructuredBuffer(RHICmdList, TEXT("ShadowVisibleCountArray"), UintStride, ProxyCount);
+	ShadowVisibleCountArrayUAV = RHICmdList.CreateUnorderedAccessView(
+		ShadowVisibleCountArray,
+		FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(UintStride));
+	ShadowVisibleCountArraySRV = RHICmdList.CreateShaderResourceView(
+		ShadowVisibleCountArray,
+		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(UintStride));
+
+	bShadowCompactBuffersAllocated = true;
+
+	UE_LOG(LogTemp, Log, TEXT("[GS Stage3] Shadow compact buffers allocated: MaxSplats=%u ProxyCount=%u"),
+		MaxSplats, ProxyCount);
+}
+
+// ============================================================================
+// Stage 3: DispatchGlobalCompactSplats
+// ============================================================================
+
+void FGlobalSplatBufferManager::DispatchGlobalCompactSplats(
+	FRHICommandListImmediate& RHICmdList,
+	const TArray<FGaussianSplatSceneProxy*>& ValidProxies)
+{
+	if (!IsReady() || TotalSplatCount == 0 || GetProxyCount() == 0)
+	{
+		return;
+	}
+
+	// Stage 2 shadow bitmaps must exist (DispatchGlobalClusterCulling must run first)
+	if (!bShadowBuffersAllocated)
+	{
+		return;
+	}
+
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatGlobalCompactSplats_Shadow);
+
+	// Ensure shadow compact buffers exist
+	EnsureShadowCompactBuffers(RHICmdList);
+
+	TShaderMapRef<FGlobalCompactSplatsResetCS> ResetShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FGlobalCompactSplatsCS> CompactShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ResetShader.IsValid() || !CompactShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GS Stage3] Global compact splats shaders not valid"));
+		return;
+	}
+
+	// Transition shadow compact buffers to UAVCompute
+	RHICmdList.Transition(FRHITransitionInfo(ShadowCompactedSplatIndices, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	// Transition Stage 2 shadow bitmaps to SRVCompute (they should already be there after Stage 2)
+	RHICmdList.Transition(FRHITransitionInfo(ShadowClusterVisibilityBitmap, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ShadowSelectedClusterBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ShadowLODClusterSelectedBitmap, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+
+	// Transition global input buffers to SRVCompute
+	RHICmdList.Transition(FRHITransitionInfo(GlobalSplatClusterIndexBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ProxyMetadataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+
+	// Create SRVs for shadow bitmaps (read-only in this stage)
+	FShaderResourceViewRHIRef ShadowClusterVisibilityBitmapSRV = RHICmdList.CreateShaderResourceView(
+		ShadowClusterVisibilityBitmap,
+		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(sizeof(uint32)));
+	FShaderResourceViewRHIRef ShadowSelectedClusterBufferSRV = RHICmdList.CreateShaderResourceView(
+		ShadowSelectedClusterBuffer,
+		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(sizeof(uint32)));
+	FShaderResourceViewRHIRef ShadowLODClusterSelectedBitmapSRV = RHICmdList.CreateShaderResourceView(
+		ShadowLODClusterSelectedBitmap,
+		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(sizeof(uint32)));
+
+	// Step 1: Reset visible count array
+	{
+		FGlobalCompactSplatsResetCS::FParameters ResetParams;
+		ResetParams.ShadowVisibleCountArray = ShadowVisibleCountArrayUAV;
+		ResetParams.ProxyCount = GetProxyCount();
+		ResetParams.TotalSplatCount = TotalSplatCount;
+		ResetParams.UseLODRendering = 1;
+
+		uint32 NumGroups = FMath::DivideAndRoundUp(GetProxyCount(), 256u);
+		NumGroups = FMath::Max(NumGroups, 1u);
+
+		SetComputePipelineState(RHICmdList, ResetShader.GetComputeShader());
+		SetShaderParameters(RHICmdList, ResetShader, ResetShader.GetComputeShader(), ResetParams);
+		RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+		UnsetShaderUAVs(RHICmdList, ResetShader, ResetShader.GetComputeShader());
+	}
+
+	// UAV barrier between reset and compaction
+	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
+	// Step 2: Global compact splats dispatch
+	{
+		FGlobalCompactSplatsCS::FParameters CompactParams;
+		CompactParams.GlobalSplatClusterIndexBuffer = GlobalSplatClusterIndexBufferSRV;
+		CompactParams.ProxyMetadataBuffer = ProxyMetadataBufferSRV;
+		CompactParams.ShadowClusterVisibilityBitmap = ShadowClusterVisibilityBitmapSRV;
+		CompactParams.ShadowSelectedClusterBuffer = ShadowSelectedClusterBufferSRV;
+		CompactParams.ShadowLODClusterSelectedBitmap = ShadowLODClusterSelectedBitmapSRV;
+		CompactParams.ShadowCompactedSplatIndices = ShadowCompactedSplatIndicesUAV;
+		CompactParams.ShadowVisibleCountArray = ShadowVisibleCountArrayUAV;
+		CompactParams.ProxyCount = GetProxyCount();
+		CompactParams.TotalSplatCount = TotalSplatCount;
+		CompactParams.UseLODRendering = 1;
+
+		const uint32 NumGroups = FMath::DivideAndRoundUp(TotalSplatCount, 256u);
+
+		SetComputePipelineState(RHICmdList, CompactShader.GetComputeShader());
+		SetShaderParameters(RHICmdList, CompactShader, CompactShader.GetComputeShader(), CompactParams);
+		RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+		UnsetShaderUAVs(RHICmdList, CompactShader, CompactShader.GetComputeShader());
+	}
+
+	// Transition shadow compact buffers to readable state for validation
+	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ShadowCompactedSplatIndices, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+
+	// ---------------------------------------------------------------
+	// Validation: compare per-proxy visible splat counts (old path)
+	// against ShadowVisibleCountArray per proxy (new path)
+	// ---------------------------------------------------------------
+	if (CVarValidateGlobalCompact.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
+	{
+		// Read back the shadow visible count array to CPU
+		const uint32 CountBytes = GetProxyCount() * sizeof(uint32);
+		TArray<uint32> ShadowCounts;
+		ShadowCounts.SetNumZeroed(GetProxyCount());
+		{
+			void* Src = RHICmdList.LockBuffer(ShadowVisibleCountArray, 0, CountBytes, RLM_ReadOnly);
+			FMemory::Memcpy(ShadowCounts.GetData(), Src, CountBytes);
+			RHICmdList.UnlockBuffer(ShadowVisibleCountArray);
+		}
+
+		// Per-proxy comparison
+		bool bAllMatch = true;
+		uint32 OldTotal = 0;
+		uint32 NewTotal = 0;
+
+		for (int32 i = 0; i < ValidProxies.Num(); i++)
+		{
+			FGaussianSplatGPUResources* Res = ValidProxies[i]->GetGPUResources();
+			if (!Res) continue;
+
+			// Find this proxy's metadata index
+			int32 MetadataIdx = LastProxySet.Find(ValidProxies[i]);
+			if (MetadataIdx == INDEX_NONE)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[GS Stage3] Proxy[%d]: not found in metadata -- skipping"), i);
+				continue;
+			}
+
+			// Old path: read per-proxy VisibleSplatCountBuffer[0]
+			uint32 OldCount = 0;
+			{
+				RHICmdList.Transition(FRHITransitionInfo(Res->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+				void* Src = RHICmdList.LockBuffer(Res->VisibleSplatCountBuffer, 0, sizeof(uint32), RLM_ReadOnly);
+				FMemory::Memcpy(&OldCount, Src, sizeof(uint32));
+				RHICmdList.UnlockBuffer(Res->VisibleSplatCountBuffer);
+			}
+
+			// New path: read from ShadowVisibleCountArray
+			uint32 NewCount = ((uint32)MetadataIdx < GetProxyCount()) ? ShadowCounts[MetadataIdx] : 0;
+
+			bool bMatch = (OldCount == NewCount);
+			if (!bMatch) bAllMatch = false;
+
+			UE_LOG(LogTemp, Log,
+				TEXT("[GS Stage3] Proxy[%d] (meta=%d): old=%u visible splats  new=%u %s"),
+				i, MetadataIdx, OldCount, NewCount, bMatch ? TEXT("MATCH") : TEXT("MISMATCH"));
+
+			OldTotal += OldCount;
+			NewTotal += NewCount;
+		}
+
+		UE_LOG(LogTemp, Log,
+			TEXT("[GS Stage3] Total: old=%u  new=%u  %s"),
+			OldTotal, NewTotal,
 			bAllMatch ? TEXT("All proxies MATCH") : TEXT("MISMATCH DETECTED"));
 	}
 }
