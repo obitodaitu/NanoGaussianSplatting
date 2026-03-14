@@ -64,6 +64,18 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
 	ECVF_RenderThreadSafe);
 
+/** Use global dispatch pipeline instead of per-proxy loops (Stage 5).
+ *  0: Old per-proxy path (default). 1: Global dispatch path. */
+TAutoConsoleVariable<int32> CVarUseGlobalDispatch(
+	TEXT("gs.UseGlobalDispatch"),
+	0,
+	TEXT("Use the global dispatch pipeline (Stages 2-5) instead of per-proxy dispatch loops.\n")
+	TEXT("When enabled, all cluster culling, compaction, visible count gathering,\n")
+	TEXT("and CalcViewData are done via single global dispatches.\n")
+	TEXT(" 0: Off — per-proxy dispatch loops (default)\n")
+	TEXT(" 1: On  — global dispatch pipeline (should produce identical rendering)"),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 
@@ -392,12 +404,18 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					// Ensure fixed-size prefix-sum buffers exist (allocated once)
 					RawAccumulator->EnsureCompactionBuffersAllocated(RHICmdList);
 
-					if (!bCanSkipAdjusted && RawSplatBufferManager && RawSplatBufferManager->IsReady())
+					// Check if the global dispatch pipeline should be used (Stage 5)
+					bool bUseGlobalDispatch = (CVarUseGlobalDispatch.GetValueOnRenderThread() > 0)
+						&& RawSplatBufferManager && RawSplatBufferManager->IsReady();
+
+					if (!bCanSkipAdjusted)
+					{
+					if (bUseGlobalDispatch)
 					{
 						//==================================================
-						// GLOBAL DISPATCH PATH
+						// GLOBAL DISPATCH PATH (Stage 5)
 						// All culling, compaction, visible count gathering,
-						// and CalcViewData done via single global dispatches.
+						// and CalcViewData done via global dispatches.
 						//==================================================
 
 						// Budget early-out: determine how many proxies to process
@@ -429,20 +447,21 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						RawSplatBufferManager->DispatchGlobalCompactSplats(
 							RHICmdList, ProcessedProxies);
 
-						// 3. Gather visible counts: reorder counts → GlobalVisibleCountArray
+						// 3. Gather visible counts: reorder shadow counts → GlobalVisibleCountArray
 						RawSplatBufferManager->DispatchGatherVisibleCountsGlobal(
 							RHICmdList, ProcessedProxies, RawAccumulator);
 
-						// 4. PrefixSum (reads GlobalVisibleCountArray, writes indirect args)
+						// 4. PrefixSum (UNCHANGED — reads GlobalVisibleCountArray, writes indirect args)
 						FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
 							RHICmdList, RawAccumulator, NumProcessedProxies, MaxRenderBudget);
 
-						// 5. Repack + GlobalCalcViewData → GlobalViewDataBuffer
+						// 5. Repack + GlobalCalcViewData → write to REAL GlobalViewDataBuffer
 						RawSplatBufferManager->DispatchRepackAndGlobalCalcViewData(
 							RHICmdList, *SceneView, ProcessedProxies,
-							RawAccumulator, MaxRenderBudget);
+							RawAccumulator, MaxRenderBudget,
+							/*bWriteToRealBuffer=*/ true);
 
-						// 6. CalcDistances + RadixSort (indirect, GPU-driven counts)
+						// 6. CalcDistances + RadixSort (UNCHANGED — indirect, GPU-driven counts)
 						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
 						FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);
 
@@ -473,6 +492,146 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 								GPUResources->bHasCachedSortData = false;
 							}
 						}
+					}
+					else
+					{
+						//==================================================
+						// OLD PER-PROXY PATH (unchanged)
+						// Per-proxy ClusterCulling, CompactSplats, PrepareIndirectArgs
+						// Shadow Stage 2/3/4 validation (if enabled)
+						// Per-proxy GatherVisibleCount, PrefixSum, CalcViewData
+						//==================================================
+
+						// --------------------------------------------------
+						// Phase 0: Per-proxy culling + compaction + indirect args
+						// --------------------------------------------------
+						int32 NumProcessedProxies = 0;
+						uint32 CumulativeSplatCount = 0;
+
+						for (const auto& Info : ValidProxies)
+						{
+							if (MaxRenderBudget > 0 && CumulativeSplatCount >= MaxRenderBudget)
+							{
+								break;
+							}
+
+							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;
+							int32 SplatCount = Info.Proxy->GetSplatCount();
+							int32 OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
+
+							FGaussianSplatRenderer::DispatchClusterCulling(
+								RHICmdList, *SceneView, GPUResources,
+								Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering);
+
+							FGaussianSplatRenderer::DispatchCompactSplats(
+								RHICmdList, GPUResources,
+								SplatCount, OriginalSplatCount, Info.bUseLODRendering);
+
+							FGaussianSplatRenderer::DispatchPrepareIndirectArgs(RHICmdList, GPUResources);
+
+							CumulativeSplatCount += (uint32)SplatCount;
+							NumProcessedProxies++;
+						}
+
+						// Build proxy array for shadow validation
+						TArray<FGaussianSplatSceneProxy*> ProcessedProxies;
+						ProcessedProxies.Reserve(NumProcessedProxies);
+						for (int32 pi = 0; pi < NumProcessedProxies; pi++)
+						{
+							ProcessedProxies.Add(ValidProxies[pi].Proxy);
+						}
+
+						// Shadow Stage 2/3 validation (if enabled)
+						if (RawSplatBufferManager && RawSplatBufferManager->IsReady())
+						{
+							RawSplatBufferManager->DispatchGlobalClusterCulling(
+								RHICmdList, *SceneView, ProcessedProxies);
+
+							RawSplatBufferManager->DispatchGlobalCompactSplats(
+								RHICmdList, ProcessedProxies);
+						}
+
+						// --------------------------------------------------
+						// Phase 1: Gather visible counts + GPU prefix sum
+						// --------------------------------------------------
+						for (int32 i = 0; i < NumProcessedProxies; i++)
+						{
+							FGaussianSplatGPUResources* GPUResources = ValidProxies[i].Proxy->GetGPUResources();
+							if (!GPUResources) continue;
+							FGaussianSplatRenderer::DispatchGatherVisibleCount(
+								RHICmdList, GPUResources, RawAccumulator, i);
+						}
+
+						FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
+							RHICmdList, RawAccumulator, NumProcessedProxies, MaxRenderBudget);
+
+						// --------------------------------------------------
+						// Phase 2: Per-proxy CalcViewData → global buffer
+						// --------------------------------------------------
+						for (int32 i = 0; i < NumProcessedProxies; i++)
+						{
+							const auto& Info = ValidProxies[i];
+							FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+							if (!GPUResources) continue;
+							int32 SplatCount = Info.Proxy->GetSplatCount();
+							int32 OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
+
+							FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
+								RHICmdList, *SceneView, GPUResources,
+								Info.LocalToWorld,
+								SplatCount,
+								OriginalSplatCount,
+								Info.Proxy->GetSHOrder(),
+								Info.Proxy->GetOpacityScale(),
+								Info.Proxy->GetSplatScale(),
+								i,
+								RawAccumulator,
+								MaxRenderBudget);
+						}
+
+						// Shadow Stage 4 validation (if enabled)
+						if (RawSplatBufferManager && RawSplatBufferManager->IsReady())
+						{
+							RawSplatBufferManager->DispatchRepackAndGlobalCalcViewData(
+								RHICmdList, *SceneView, ProcessedProxies,
+								RawAccumulator, MaxRenderBudget);
+						}
+
+						// --------------------------------------------------
+						// Phase 3: Single global CalcDistances + RadixSort
+						// --------------------------------------------------
+						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
+						FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);
+
+						// Update caches
+						RawAccumulator->bHasCachedSortData = true;
+						RawAccumulator->CachedTotalSplatCount = NewTotalSplatCount;
+						RawAccumulator->CachedViewProjectionMatrix = CurrentVP;
+
+						for (int32 i = 0; i < ValidProxies.Num(); i++)
+						{
+							FGaussianSplatGPUResources* GPUResources = ValidProxies[i].Proxy->GetGPUResources();
+							if (!GPUResources) continue;
+
+							if (i < NumProcessedProxies)
+							{
+								const auto& Info = ValidProxies[i];
+								GPUResources->CachedViewProjectionMatrix = CurrentVP;
+								GPUResources->CachedLocalToWorld = Info.LocalToWorld;
+								GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
+								GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
+								GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
+								GPUResources->CachedDebugMode = CurrentDebugMode;
+								GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
+								GPUResources->bHasCachedSortData = true;
+							}
+							else
+							{
+								GPUResources->bHasCachedSortData = false;
+							}
+						}
+					}
 					} // !bCanSkipAdjusted
 
 					// Single draw call — instance count from GlobalDrawIndirectArgsBuffer

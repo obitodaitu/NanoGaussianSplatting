@@ -18,23 +18,28 @@ IMPLEMENT_GLOBAL_SHADER(FRadixSortScatterCS, "/Plugin/GaussianSplatting/Private/
 IMPLEMENT_GLOBAL_SHADER(FClusterCullingResetCS, "/Plugin/GaussianSplatting/Private/ClusterCulling.usf", "ResetCounterCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClusterCullingCS, "/Plugin/GaussianSplatting/Private/ClusterCulling.usf", "MainCS", SF_Compute);
 
-// Global cluster culling
+// Global cluster culling (Stage 2)
 IMPLEMENT_GLOBAL_SHADER(FGlobalClusterCullingResetCS, "/Plugin/GaussianSplatting/Private/GlobalClusterCulling.usf", "ResetCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FGlobalClusterCullingCS, "/Plugin/GaussianSplatting/Private/GlobalClusterCulling.usf", "MainCS", SF_Compute);
 
-// Global compact splats
+// Global compact splats (Stage 3)
 IMPLEMENT_GLOBAL_SHADER(FGlobalCompactSplatsResetCS, "/Plugin/GaussianSplatting/Private/GlobalCompactSplats.usf", "ResetCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FGlobalCompactSplatsCS, "/Plugin/GaussianSplatting/Private/GlobalCompactSplats.usf", "MainCS", SF_Compute);
 
-// Repack + Global CalcViewData
+// Splat compaction shaders (GPU-driven work reduction)
+IMPLEMENT_GLOBAL_SHADER(FCompactSplatsCS, "/Plugin/GaussianSplatting/Private/CompactSplats.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FPrepareIndirectArgsCS, "/Plugin/GaussianSplatting/Private/PrepareIndirectArgs.usf", "MainCS", SF_Compute);
+
+// Stage 4: Repack + Global CalcViewData (shadow mode)
 IMPLEMENT_GLOBAL_SHADER(FRepackCompactedIndicesCS, "/Plugin/GaussianSplatting/Private/RepackCompactedIndices.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FGlobalCalcViewDataCS, "/Plugin/GaussianSplatting/Private/GlobalCalcViewData.usf", "MainCS", SF_Compute);
 
 // NOTE: GPU-driven LOD shaders removed in unified approach
 // LOD splats are now processed by CalcViewData.usf using the same buffers as original splats
 
-// Gather visible counts global
+// Stage 5: Gather visible counts global (reorder shadow → processed order)
 IMPLEMENT_GLOBAL_SHADER(FGatherVisibleCountsGlobalCS, "/Plugin/GaussianSplatting/Private/GatherVisibleCountsGlobal.usf", "MainCS", SF_Compute);
 
-// Compaction prefix-sum shaders
+// Global accumulator + compaction prefix-sum shaders
+IMPLEMENT_GLOBAL_SHADER(FGatherVisibleCountsCS,     "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPrefixSumVisibleCountsCS,  "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);

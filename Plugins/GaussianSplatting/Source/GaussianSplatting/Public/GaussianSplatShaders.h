@@ -75,6 +75,76 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 // in the unified approach. LOD splats are now processed by CalcViewData using the same
 // buffers as original splats. See CalcViewData.usf for unified LOD handling.
 
+//----------------------------------------------------------------------
+// Splat Compaction Shaders (for GPU-driven work reduction)
+//----------------------------------------------------------------------
+
+/**
+ * Compute shader that builds a compact list of visible splat indices
+ * This enables subsequent passes to only process visible splats
+ */
+class FCompactSplatsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FCompactSplatsCS);
+	SHADER_USE_PARAMETER_STRUCT(FCompactSplatsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Input: Cluster visibility data
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SplatClusterIndexBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, LODClusterSelectedBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SelectedClusterBuffer)
+		// Output: Compact list of visible splat indices
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, CompactedSplatIndices)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleSplatCount)
+		// Parameters
+		SHADER_PARAMETER(uint32, TotalSplatCount)
+		SHADER_PARAMETER(uint32, OriginalSplatCount)
+		SHADER_PARAMETER(uint32, UseLODRendering)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
+	}
+};
+
+/**
+ * Compute shader that prepares indirect dispatch and draw arguments
+ * from the visible splat count
+ */
+class FPrepareIndirectArgsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FPrepareIndirectArgsCS);
+	SHADER_USE_PARAMETER_STRUCT(FPrepareIndirectArgsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Input: Visible splat count
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, VisibleSplatCount)
+		// Output: Indirect dispatch args (uint3: numGroupsX, numGroupsY, numGroupsZ)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDispatchArgs)
+		// Output: Indirect draw args (5 uints for DrawIndexedIndirect)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgs)
+		// Output: Sort indirect dispatch args (uint3: NumTiles, 1, 1)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SortIndirectArgs)
+		// Output: Sort parameters (uint2: SortCount, NumTiles)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SortParamsBuffer)
+		// Thread group size for compute shaders
+		SHADER_PARAMETER(uint32, ComputeThreadGroupSize)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
 /**
  * Compute shader for calculating sort distances (depth) for each splat
  */
@@ -354,7 +424,7 @@ class FClusterCullingCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Global Cluster Culling
+// Global Cluster Culling (Stage 2 — shadow mode)
 //----------------------------------------------------------------------
 
 /**
@@ -441,7 +511,7 @@ class FGlobalClusterCullingCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Global Compact Splats
+// Global Compact Splats (Stage 3 -- shadow mode)
 //----------------------------------------------------------------------
 
 /**
@@ -513,7 +583,7 @@ class FGlobalCompactSplatsCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Repack Compacted Indices + Global CalcViewData
+// Stage 4: Repack Compacted Indices + Global CalcViewData (shadow mode)
 //----------------------------------------------------------------------
 
 /**
@@ -614,7 +684,7 @@ class FGlobalCalcViewDataCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Gather Visible Counts Global
+// Stage 5: Gather Visible Counts Global (reorder shadow → processed order)
 //----------------------------------------------------------------------
 
 /**
@@ -640,8 +710,35 @@ class FGatherVisibleCountsGlobalCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Compaction prefix-sum shaders
+// Global Accumulator + Compaction prefix-sum shaders
 //----------------------------------------------------------------------
+
+/**
+ * GatherCS: 1 thread per proxy.
+ * Copies GPUResources->VisibleSplatCountBuffer[0] into GlobalVisibleCountArray[ProxyIndex].
+ */
+class FGatherVisibleCountsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGatherVisibleCountsCS);
+	SHADER_USE_PARAMETER_STRUCT(FGatherVisibleCountsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, PerProxyVisibleCount)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalVisibleCountArray)
+		SHADER_PARAMETER(uint32, ProxyIndex)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("GATHER_CS"), 1);
+	}
+};
 
 /**
  * PrefixSumCS: 1 thread total.

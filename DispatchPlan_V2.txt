@@ -403,47 +403,28 @@ PASS CONDITION before moving to Stage 6:
     - Stable across multiple sessions (no GPU crashes or validation errors)
 
 --------------------------------------------------------------------------------
-STAGE 6 -- Cleanup                                               [x] Complete
+STAGE 6 -- Cleanup                                               [ ] Not started
 --------------------------------------------------------------------------------
 
 GOAL: Remove all old per-proxy dispatch code and debug scaffolding.
+Only do this after Stage 5 has been stable for some time.
 
-WHAT WAS DONE:
+FILES TO MODIFY:
+    GaussianSplatRenderer.cpp
+        Remove per-proxy dispatch functions
+        Remove gs.UseGlobalDispatch CVar
+    GlobalSplatBufferManager.h/.cpp
+        Remove shadow buffers
+        Remove validation readback code
+    GaussianSplatShaders.h/.cpp
+        Remove old per-proxy shader classes if no longer needed
+    GaussianSplatSceneProxy.cpp
+        Remove per-proxy dynamic buffers no longer needed
 
-    GaussianSplatting.cpp:
-        [x] Removed gs.UseGlobalDispatch CVar — global dispatch is now the only path
-        [x] Removed entire old per-proxy dispatch path (ClusterCulling, CompactSplats,
-            PrepareIndirectArgs, GatherVisibleCount, CalcViewDataCompactedGlobal loops)
-        [x] Removed shadow Stage 2/3/4 validation dispatch calls
-
-    GaussianSplatRenderer.h/.cpp:
-        [x] Removed DispatchCompactSplats (per-proxy compaction)
-        [x] Removed DispatchPrepareIndirectArgs (per-proxy indirect args)
-        [x] Removed DispatchGatherVisibleCount (per-proxy gather to GlobalAccumulator)
-        [x] Removed DispatchCalcViewDataCompactedGlobal (per-proxy CalcViewData to global)
-
-    GlobalSplatBufferManager.h/.cpp:
-        [x] Removed CVars: gs.ValidateGlobalCulling, gs.ValidateGlobalCompact,
-            gs.ValidateGlobalViewData
-        [x] Removed all validation readback code (~300 lines of GPU readback + comparison)
-        [x] Removed bWriteToRealBuffer parameter (always writes to real buffer now)
-        [x] Removed ShadowGlobalViewDataBuffer (validation-only)
-        [x] Removed ShadowValidationStagingBuffer (validation-only)
-        [x] Updated SCOPED_DRAW_EVENT names (removed "_Shadow" suffix)
-
-    GaussianSplatShaders.h/.cpp:
-        [x] Removed FCompactSplatsCS shader class + IMPLEMENT_GLOBAL_SHADER
-        [x] Removed FPrepareIndirectArgsCS shader class + IMPLEMENT_GLOBAL_SHADER
-        [x] Removed FGatherVisibleCountsCS (per-proxy) shader class + IMPLEMENT_GLOBAL_SHADER
-        [x] Updated section comments (removed "shadow mode" and "Stage N" references)
-
-    NOTE: "Shadow" prefix on buffer variable names and HLSL shader parameter names
-    was intentionally preserved to avoid touching .usf shader files. This is cosmetic
-    only — all buffers are now primary (no longer shadow/validation).
-
-    NOTE: Non-Nanite fallback path preserved (uses DispatchClusterCulling per-proxy
-    + DispatchCalcViewDataGlobal). Per-proxy dynamic buffers on GaussianSplatSceneProxy
-    preserved for this path.
+    Remove CVars:
+        gs.ValidateGlobalCulling
+        gs.ValidateGlobalCompact
+        gs.ValidateGlobalViewData
 
 PASS CONDITION:
     - Project compiles cleanly
@@ -459,7 +440,7 @@ PASS CONDITION:
   STAGE 3 -- Global Compact Splats (Shadow)     [x] Complete
   STAGE 4 -- Repack + Global CalcViewData       [x] Complete
   STAGE 5 -- Full Switchover                    [x] Complete
-  STAGE 6 -- Cleanup                            [x] Complete
+  STAGE 6 -- Cleanup                            [ ] Not started
 
 ================================================================================
 5. RISK NOTES
