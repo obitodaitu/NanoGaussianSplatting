@@ -403,7 +403,8 @@ struct FGlobalSplatBufferManager
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget);
+		uint32 MaxRenderBudget,
+		bool bWriteRealViewData = false);
 
 	/**
 	 * Dispatch ClusterPrefixSum shader.
@@ -414,7 +415,8 @@ struct FGlobalSplatBufferManager
 	void DispatchClusterPrefixSum(
 		FRHICommandListImmediate& RHICmdList,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget);
+		uint32 MaxRenderBudget,
+		bool bWriteRealIndirectArgs = false);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

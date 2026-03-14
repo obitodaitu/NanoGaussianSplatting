@@ -1613,7 +1613,8 @@ static TAutoConsoleVariable<int32> CVarClusterPrefixSumTest(
 void FGlobalSplatBufferManager::DispatchClusterPrefixSum(
 	FRHICommandListImmediate& RHICmdList,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	uint32 MaxRenderBudget)
+	uint32 MaxRenderBudget,
+	bool bWriteRealIndirectArgs)
 {
 	if (!IsReady() || !bClusterWorkListBuffersAllocated)
 	{
@@ -1684,10 +1685,22 @@ void FGlobalSplatBufferManager::DispatchClusterPrefixSum(
 	// Transition outputs to UAVCompute
 	RHICmdList.Transition(FRHITransitionInfo(ClusterOutputOffsetsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ClusterCalcViewDataIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(TestCalcDistIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(TestSortIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(TestSortParams, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(TestDrawIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	// When writing to real indirect args, use the GlobalAccumulator buffers;
+	// otherwise use test buffers (shadow mode).
+	if (bWriteRealIndirectArgs)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalCalcDistIndirectArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortIndirectArgsGlobalBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalDrawIndirectArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	}
+	else
+	{
+		RHICmdList.Transition(FRHITransitionInfo(TestCalcDistIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(TestSortIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(TestSortParams, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(TestDrawIndirectArgs, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	}
 
 	// Dispatch
 	{
@@ -1696,10 +1709,21 @@ void FGlobalSplatBufferManager::DispatchClusterPrefixSum(
 		Params.VisibleClusterCountBuffer = VisibleClusterCountBufferSRV;
 		Params.ClusterOutputOffsetsBuffer = ClusterOutputOffsetsBufferUAV;
 		Params.ClusterCalcViewDataIndirectArgs = ClusterCalcViewDataIndirectArgsUAV;
-		Params.TestCalcDistIndirectArgs = TestCalcDistIndirectArgsUAV;
-		Params.TestSortIndirectArgs = TestSortIndirectArgsUAV;
-		Params.TestSortParams = TestSortParamsUAV;
-		Params.TestDrawIndirectArgs = TestDrawIndirectArgsUAV;
+
+		if (bWriteRealIndirectArgs)
+		{
+			Params.TestCalcDistIndirectArgs = GlobalAccumulator->GlobalCalcDistIndirectArgsBufferUAV;
+			Params.TestSortIndirectArgs = GlobalAccumulator->GlobalSortIndirectArgsGlobalBufferUAV;
+			Params.TestSortParams = GlobalAccumulator->GlobalSortParamsBufferUAV;
+			Params.TestDrawIndirectArgs = GlobalAccumulator->GlobalDrawIndirectArgsBufferUAV;
+		}
+		else
+		{
+			Params.TestCalcDistIndirectArgs = TestCalcDistIndirectArgsUAV;
+			Params.TestSortIndirectArgs = TestSortIndirectArgsUAV;
+			Params.TestSortParams = TestSortParamsUAV;
+			Params.TestDrawIndirectArgs = TestDrawIndirectArgsUAV;
+		}
 		Params.MaxRenderBudget = MaxRenderBudget;
 
 		SetComputePipelineState(RHICmdList, PrefixSumShader.GetComputeShader());
@@ -1795,7 +1819,8 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 	FRHICommandListImmediate& RHICmdList,
 	const FSceneView& View,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	uint32 MaxRenderBudget)
+	uint32 MaxRenderBudget,
+	bool bWriteRealViewData)
 {
 	if (!IsReady() || !bClusterWorkListBuffersAllocated || !ClusterCalcViewDataIndirectArgs.IsValid())
 	{
@@ -1813,8 +1838,8 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 
 	const uint32 ViewDataStride = sizeof(FGaussianSplatViewData);
 
-	// Allocate shadow ViewData buffer if needed (same size as GlobalViewDataBuffer)
-	if (!ShadowClusterViewDataBuffer.IsValid())
+	// Allocate shadow ViewData buffer if needed (only for test mode)
+	if (!bWriteRealViewData && !ShadowClusterViewDataBuffer.IsValid())
 	{
 		uint32 MaxSplats = FMath::Max(TotalSplatCount, 1u);
 		ShadowClusterViewDataBuffer = CreateStructuredBuffer(RHICmdList, TEXT("ShadowClusterViewDataBuffer"), ViewDataStride, MaxSplats);
@@ -1823,9 +1848,9 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 			FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(ViewDataStride));
 	}
 
-	// Ensure ProxyRenderParams is uploaded (already called by DispatchRepackAndGlobalCalcViewData,
-	// but we need it too)
-	// ProxyRenderParams is already uploaded in the render loop before this point.
+	// Determine output buffer: real GlobalViewDataBuffer or shadow test buffer
+	FBufferRHIRef& OutputBuffer = bWriteRealViewData ? GlobalAccumulator->GlobalViewDataBuffer : ShadowClusterViewDataBuffer;
+	FUnorderedAccessViewRHIRef& OutputUAV = bWriteRealViewData ? GlobalAccumulator->GlobalViewDataBufferUAV : ShadowClusterViewDataBufferUAV;
 
 	// Transition inputs
 	RHICmdList.Transition(FRHITransitionInfo(VisibleClusterWorkList, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
@@ -1838,7 +1863,7 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 	RHICmdList.Transition(FRHITransitionInfo(ShadowSelectedClusterBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 
 	// Transition output
-	RHICmdList.Transition(FRHITransitionInfo(ShadowClusterViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(OutputBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	// Transition indirect args
 	RHICmdList.Transition(FRHITransitionInfo(ClusterCalcViewDataIndirectArgs, ERHIAccess::Unknown, ERHIAccess::IndirectArgs));
@@ -1862,7 +1887,7 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 	Params.ProxyRenderParamsBuffer = ProxyRenderParamsBufferSRV;
 	Params.GlobalSplatClusterIndexBuffer = GlobalSplatClusterIndexBufferSRV;
 	Params.ShadowSelectedClusterBuffer = ShadowSelectedClusterBufferSRV;
-	Params.ClusterViewDataBuffer = ShadowClusterViewDataBufferUAV;
+	Params.ClusterViewDataBuffer = OutputUAV;
 	Params.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 	Params.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Params.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
@@ -1879,7 +1904,7 @@ void FGlobalSplatBufferManager::DispatchClusterCalcViewData(
 	UnsetShaderUAVs(RHICmdList, CalcViewShader, CalcViewShader.GetComputeShader());
 
 	// Transition output to SRV
-	RHICmdList.Transition(FRHITransitionInfo(ShadowClusterViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(OutputBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 
 	// ---------------------------------------------------------------
 	// GPU Readback Test (triggered by gs.ClusterCalcViewDataTest CVar)

@@ -965,7 +965,7 @@ PASS CONDITION:
 ================================================================================
 STAGE 4 -- Visual Toggle (CVar Switch)
 ================================================================================
-Status: [ ] Not started
+Status: [x] Complete
 
 GOAL:
   Add CVar gs.UseClusterCalcViewData to switch between old and new pipeline.
