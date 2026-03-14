@@ -450,14 +450,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							}
 							RawSplatBufferManager->DispatchGlobalClusterCulling(
 								RHICmdList, *SceneView, ProcessedProxies);
-
-							// --------------------------------------------------
-							// Stage 3: Global Compact Splats (shadow mode)
-							// Runs AFTER per-proxy compaction AND Stage 2 global culling
-							// Uses Stage 2 shadow bitmaps to validate splat counts
-							// --------------------------------------------------
-							RawSplatBufferManager->DispatchGlobalCompactSplats(
-								RHICmdList, ProcessedProxies);
 						}
 
 						// --------------------------------------------------
