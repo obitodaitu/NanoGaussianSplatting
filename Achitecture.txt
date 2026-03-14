@@ -7,16 +7,12 @@
 - important variable expose to details panel
 - add slicer to GitHub
 - add document
+- clean up the code
 
 (Performance)
-- make sure we are doing frustum culling and occlusion culling
-- compare performance again with supersplat, sparkjs, unity 
-- seems like TSR will make it keep sorting. Should we stop sorting when camera static?
-- performance not greate when moving the camera
-- make sure we merge all the draw call
-- make sure all our performance design working fine
-- chuppy when duplicating asset. Why mesh are nanite mesh are fine? 
-- Nanite seems to have better performance compare to mine
+***複製會卡的一個原因是因為print了一堆log > 複製mesh不會print一堆log 
+- reached the knowledge limitation. Stop for now
+- MaxRenderBudget is not the good solution. Some splats will disappear
 
 (VRAM Management)
 - check VRAM release or not when switching level
@@ -24,42 +20,168 @@
 - try lower VRAM usage > compare to sparkjs and unity's design
 - think about Max Budget console command again
 
-(Appearance)
-- the outline/shape of the asset will be come blury
 **************************************************************************************************
-[Performance Test]
-	- 70 llama in the level > cameara moving, Nanite enabled, 57 fps(disable AA 100fps)
-	***目前這個優化程度單純參考其實沒什麼意義了 > 必須搭配insight
-	- think again how Max Budget works
-	- 試著加HLOD的設計，應該蠻合理的 > 目前加了一次但反而更慢了
-	- 單一個asset要怎麼做HLOD? 有合理嗎?
 
 
+
+
+--------------------------------------------------------------------------------------------------------------------------
+[Full render process]
+
+ Big Picture: Rendering Pipeline
+
+  Phase 0 — Asset Import (Editor/Cook Time)
+
+  1. Parse PLY — Read raw splat data (position, rotation, scale, opacity, color, SH coefficients)
+  2. Morton Code Sort — Encode 3D positions into 64-bit Morton codes (Z-order curve) for spatial locality, then sort all
+   splats
+  3. Leaf Cluster Creation — Group every 128 consecutive (Morton-sorted) splats into a leaf cluster, compute bounding
+  sphere per cluster
+  4. Parent Hierarchy Construction — Recursively merge leaf clusters into parent clusters (max 8 children), building a
+  tree
+  5. LOD Splat Generation — For each parent cluster, merge 4 child splats → 1 parent splat (4:1 reduction). Compute
+  MaxError = max world-space distance between original and merged representation
+  6. Serialize — Save cluster hierarchy + all splat buffers + SH buffers as .uasset
+
+  ---
+  Phase 1 — CPU Per-Frame Setup (Runtime)
+
+  Stage 1: Global Buffer Setup
+
+  - Hook into engine's PostOpaqueRender (after TSR, before translucency)
+  - Gather all visible GaussianSplatSceneProxy instances
+  - Concatenate each proxy's static GPU buffers (PackedSplat, Cluster, SH, SplatClusterIndex) into single global buffers
+   (GPU-to-GPU copy, only when proxy set changes)
+  - Upload proxy metadata every frame: LocalToWorld matrix, buffer offsets, cluster counts, error thresholds
+
+  Cache check: If camera/LOD settings unchanged → skip Stages 2–4, reuse previous frame's sort results
+
+  ---
+  Phase 2 — GPU Cluster Culling (Single Dispatch for ALL Proxies)
+
+  Shader: GlobalClusterCulling.usf — one thread per leaf cluster across all proxies
+
+  For each leaf cluster:
+  1. Binary search metadata buffer → find owning proxy
+  2. Frustum Culling — Test cluster bounding sphere against 6 frustum planes. If outside → skip
+  3. Screen-Space Error LOD Selection — ProjectedError = (MaxError / Distance) × ScreenHeight × 0.5. If error <
+  threshold → use this cluster's splats. If error > threshold → select parent cluster's LOD splats instead
+  4. Output — Set bits in ClusterVisibilityBitmap and LODClusterSelectedBitmap
+
+  ---
+  Phase 3 — GPU Splat Compaction (Single Dispatch for ALL Splats)
+
+  Shader: GlobalCompactSplats.usf — one thread per splat across all proxies
+
+  For each splat:
+  1. Look up which cluster it belongs to
+  2. Check if that cluster is visible (via bitmap)
+  3. If visible → atomically write splat index into a dense CompactedSplatIndices array
+
+  Result: Massive reduction — e.g. 719K splats → maybe 1K–5K visible splats depending on LOD/view
+
+  ---
+  Phase 4 — Prefix Sum & Indirect Args (GPU, Single Thread Group)
+
+  - Prefix sum over per-proxy visible counts → compute global base offsets
+  - Generate indirect dispatch/draw args on GPU (no CPU readback needed):
+    - CalcViewData dispatch size
+    - Sort dispatch size
+    - Draw args: {6 indices, TotalVisibleSplats instances}
+  - Apply render budget cap if configured
+
+  ---
+  Phase 5 — CalcViewData (GPU, Indirect Dispatch)
+
+  Shader: CalcViewData.usf — one thread per visible splat
+
+  For each visible splat:
+  1. Load packed position/rotation/scale, apply LocalToWorld transform
+  2. Evaluate Spherical Harmonics — Compute view-dependent color using camera direction (up to 3rd order SH)
+  3. Project to screen space — Compute 2D covariance from 3D Gaussian, extract principal axes (Axis1, Axis2) for quad
+  rendering
+  4. Pack color, store clip position and velocity (for TAA/TSR)
+
+  Output: GlobalViewDataBuffer — screen-space rendering data for all visible splats
+
+  ---
+  Phase 6 — Calculate Sort Keys (GPU, Indirect Dispatch)
+
+  Shader: CalcDistances.usf
+
+  - Extract depth from each splat's clip position
+  - Convert to sortable uint (handling UE's reversed-Z)
+  - Behind-camera splats get 0xFFFFFFFF (sorted to end / discarded)
+
+  ---
+  Phase 7 — Radix Sort (GPU, 4 Passes)
+
+  Shader: RadixSort.usf — LSD Radix Sort, 8-bit digits, 32-bit keys
+
+  Each pass (4 total, for bits 0–7, 8–15, 16–23, 24–31):
+  1. Count — Build per-tile histograms (256 buckets)
+  2. PrefixSum — Exclusive prefix sum per digit across tiles
+  3. DigitPrefixSum — Prefix sum across all 256 digits
+  4. Scatter — Rearrange keys+values to sorted positions (ping-pong buffers)
+
+  Result: All visible splats sorted back-to-front for correct alpha blending
+
+  ---
+  Phase 8 — Draw (GPU Rasterization, Single Indirect Draw Call)
+
+  Single DrawIndexedPrimitiveIndirect for ALL proxies combined
+
+  - Vertex Shader — Load ViewData via sorted key, expand quad corners using Axis1/Axis2 (covariance principal axes)
+  - Pixel Shader — Compute Gaussian falloff exp(-d²), unpack color, alpha blend (premultiplied), output velocity vectors
+
+  Output: Color + Depth + Velocity textures → composited into the frame
+
+  ---
+  Key Optimization Summary
+
+  ┌──────────────────────────────────┬───────────────────────────────────────────────────────────────────────────┐
+  │            Technique             │                                  Benefit                                  │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Hierarchical cluster culling     │ Test ~5,600 clusters instead of ~719K splats                              │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Screen-space error LOD           │ Dynamically reduce splat count for distant clusters (4:1 per level)       │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ GPU compaction                   │ Only process visible splats in later stages (~100x reduction possible)    │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Indirect dispatch/draw           │ All dispatch sizes computed on GPU — zero CPU readback                    │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Single global dispatch per stage │ One culling pass, one compaction pass, one sort, one draw for ALL proxies │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Camera-static cache              │ Skip Stages 2–5 if view unchanged, reuse previous sort                    │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Radix sort                       │ O(n) GPU sort, 4 passes for 32-bit keys                                   │
+  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Render budget cap                │ Limit total splat count, prioritize closer proxies                        │
+  └──────────────────────────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+--------------------------------------------------------------------------------------------------------------------
+
+
+
+VRam consumption
+
+----------------------------------------------
+[Performance optimization design]
+	- Nanite-style cluster + screen space error
+	- GPU Accumulation >　merge drall call > DrawIndexedIndirect
+	- radix sort
+	- Max Render Budget
+	- single global dispatch both CPU and GPU
 
 
 ----------------------------------------------------------
 [Render Pipeline Hook locaiton]
 	- After TSR
 	- no depth of field, no motion blur
-
------------------------------------------------------------------------------------
-[Crash Report - didn't add new assets]
-LoginId:9f446d104fec595e022e4284d6387af8
-EpicAccountId:e3929da773ea4842bdba01e8d536a4f7
-
-Unhandled Exception: EXCEPTION_ACCESS_VIOLATION reading address 0xffffffffffffffff
-
-UnrealEditor_RenderCore
-UnrealEditor_RenderCore
-UnrealEditor_RenderCore
-UnrealEditor_RenderCore
-UnrealEditor_Core
-UnrealEditor_Core
-UnrealEditor_Core
-UnrealEditor_Core
-
-
-
 
 
 
