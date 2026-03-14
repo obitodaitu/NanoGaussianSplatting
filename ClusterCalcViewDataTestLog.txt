@@ -1,0 +1,108 @@
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=0, SampleSize=100, NewValid=100 OldValid=53 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(442.45,-1739.47,10.00,1783.85) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(442.55,-1739.07,10.00,1783.83) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(442.46,-1739.71,10.00,1783.41) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=0, SampleSize=100, NewValid=100 OldValid=53 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(442.45,-1739.47,10.00,1783.85) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(442.55,-1739.07,10.00,1783.83) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(442.46,-1739.71,10.00,1783.41) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=0, SampleSize=100, NewValid=100 OldValid=53 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(442.45,-1739.47,10.00,1783.85) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(442.55,-1739.07,10.00,1783.83) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(442.46,-1739.71,10.00,1783.41) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=2, SampleSize=100, NewValid=0 OldValid=0 -> NO OUTPUT <<<
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=5, SampleSize=100, NewValid=0 OldValid=0 -> NO OUTPUT <<<
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=1234
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=15, SampleSize=100, NewValid=100 OldValid=54 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(302.29,-1799.90,10.00,1807.06) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(302.38,-1799.50,10.00,1807.05) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(302.33,-1800.12,10.00,1806.62) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=48, SampleSize=100, NewValid=1 OldValid=12 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=1067
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=1067
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=1067
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=111, SampleSize=100, NewValid=1 OldValid=15 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=152, SampleSize=100, NewValid=3 OldValid=29 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=178, SampleSize=100, NewValid=4 OldValid=0 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=189, SampleSize=100, NewValid=14 OldValid=84 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[1]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster]   New[2]: clip=(0.00,0.00,0.00,-1.00) cluster=663
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=234, SampleSize=100, NewValid=100 OldValid=90 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(311.30,-1850.08,10.00,1965.71) cluster=673
+LogTemp: [GS Cluster]   New[1]: clip=(311.73,-1849.14,10.00,1965.87) cluster=673
+LogTemp: [GS Cluster]   New[2]: clip=(312.73,-1844.53,10.00,1965.98) cluster=673
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=246, SampleSize=100, NewValid=100 OldValid=52 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(298.53,-1829.03,10.00,1969.79) cluster=673
+LogTemp: [GS Cluster]   New[1]: clip=(298.96,-1828.09,10.00,1969.95) cluster=673
+LogTemp: [GS Cluster]   New[2]: clip=(299.95,-1823.47,10.00,1970.05) cluster=673
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=266, SampleSize=100, NewValid=100 OldValid=74 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(292.06,-1912.15,10.00,1918.94) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(292.07,-1910.88,10.00,1918.56) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(292.26,-1910.55,10.00,1918.29) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=283, SampleSize=100, NewValid=100 OldValid=51 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(294.03,-1869.78,10.00,1923.03) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(294.04,-1868.51,10.00,1922.64) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(294.23,-1868.19,10.00,1922.38) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=295, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(292.38,-1805.58,10.00,1928.98) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(292.40,-1804.32,10.00,1928.59) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(292.58,-1804.01,10.00,1928.33) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=298, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(287.95,-1760.30,10.00,1933.81) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(287.96,-1759.05,10.00,1933.43) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(288.15,-1758.75,10.00,1933.16) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(286.46,-1693.21,10.00,1939.41) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(286.47,-1691.97,10.00,1939.02) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(286.66,-1691.67,10.00,1938.75) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(280.20,-1673.05,10.00,1942.19) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(280.21,-1671.82,10.00,1941.80) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(280.40,-1671.53,10.00,1941.53) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(269.00,-1650.50,10.00,1945.84) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(269.02,-1649.28,10.00,1945.44) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(269.21,-1648.98,10.00,1945.18) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(269.67,-1604.67,10.00,1949.35) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(269.69,-1603.45,10.00,1948.95) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(269.88,-1603.17,10.00,1948.69) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(242.92,-1085.35,10.00,1869.54) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(243.01,-1084.95,10.00,1869.52) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(242.98,-1085.74,10.00,1869.11) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(269.51,-1539.93,10.00,1954.45) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(269.52,-1538.73,10.00,1954.04) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(269.71,-1538.45,10.00,1953.78) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(236.15,-1005.38,10.00,1874.87) cluster=1218
+LogTemp: [GS Cluster]   New[1]: clip=(236.24,-1004.98,10.00,1874.85) cluster=1218
+LogTemp: [GS Cluster]   New[2]: clip=(236.21,-1005.78,10.00,1874.44) cluster=1218
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(268.33,-1447.46,10.00,1960.91) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(268.35,-1446.28,10.00,1960.50) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(268.54,-1446.01,10.00,1960.23) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(267.49,-1386.85,10.00,1965.50) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(267.51,-1385.68,10.00,1965.09) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(267.70,-1385.42,10.00,1964.82) cluster=644
+LogTemp: [GS Cluster] Stage3 TEST: VisibleClusters=300, SampleSize=100, NewValid=100 OldValid=100 -> PRODUCING OUTPUT
+LogTemp: [GS Cluster]   New[0]: clip=(268.67,-1315.46,10.00,1969.88) cluster=644
+LogTemp: [GS Cluster]   New[1]: clip=(268.69,-1314.30,10.00,1969.46) cluster=644
+LogTemp: [GS Cluster]   New[2]: clip=(268.88,-1314.05,10.00,1969.19) cluster=644

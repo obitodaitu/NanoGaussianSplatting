@@ -1,0 +1,402 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Cluster-based CalcViewData -- one thread group per visible cluster.
+// Thread 0 loads per-proxy data into groupshared, then all 128 threads process
+// splats using shared proxy data. No binary search, sequential memory access.
+// Core math is identical to GlobalCalcViewData.usf ProcessSplat().
+
+#include "/Plugin/GaussianSplatting/Private/GaussianSplatting.ush"
+
+// ============================================================================
+// ProxyMetadata struct -- must match C++ FProxyGPUMetadata (128 bytes)
+// ============================================================================
+
+struct FProxyMetadata
+{
+	float4x4 LocalToWorld;                    // 64 bytes
+
+	uint GlobalSplatStartIndex;               // 4
+	uint TotalSplatCount;                     // 4
+	uint OriginalSplatCount;                  // 4
+
+	uint GlobalClusterStartIndex;             // 4
+	uint ClusterCount;                        // 4
+	uint LeafClusterCount;                    // 4
+
+	uint GlobalVisibilityBitmapStart;         // 4
+	uint GlobalSelectedClusterStart;          // 4
+	uint GlobalLODBitmapStart;                // 4
+
+	uint GlobalSplatClusterIndexStart;        // 4
+	uint CompactionCounterIndex;              // 4
+	uint CompactionOutputStart;               // 4
+
+	uint GlobalSHByteOffset;                  // 4
+
+	uint GlobalLeafClusterEnd;                // 4
+	uint GlobalSplatEnd;                      // 4
+
+	float ProxyErrorThreshold;                // 4
+	// Total: 128 bytes
+};
+
+// ============================================================================
+// ProxyRenderParams struct -- per-proxy rendering parameters (32 bytes)
+// ============================================================================
+
+struct FProxyRenderParams
+{
+	float OpacityScale;
+	float SplatScale;
+	uint  SHOrder;
+	uint  NumSHCoeffs;
+	uint  UseSHRendering;
+	uint  SHBytesPerSplat;
+	uint  Pad0;
+	uint  Pad1;
+};
+
+// ============================================================================
+// Resources
+// ============================================================================
+
+// Work list from BuildVisibleClusterWorkList
+StructuredBuffer<uint4>              VisibleClusterWorkList;
+StructuredBuffer<uint>               ClusterOutputOffsetsBuffer;
+
+// Global input buffers
+ByteAddressBuffer                    GlobalPackedSplatBuffer;
+ByteAddressBuffer                    GlobalSHBuffer;
+StructuredBuffer<FProxyMetadata>     ProxyMetadataBuffer;
+StructuredBuffer<FProxyRenderParams> ProxyRenderParamsBuffer;
+StructuredBuffer<uint>               GlobalSplatClusterIndexBuffer;
+StructuredBuffer<uint>               ShadowSelectedClusterBuffer;
+
+// Output
+RWStructuredBuffer<FGaussianSplatViewData> ClusterViewDataBuffer;
+
+// View parameters (uniform)
+float4x4 WorldToClip;
+float4x4 WorldToView;
+float3 PreViewTranslation;
+float3 CameraPosition;
+float2 ScreenSize;
+float2 FocalLength;
+uint MaxRenderBudget;
+
+// ============================================================================
+// LoadSHGlobal: Load SH data from GlobalSHBuffer with per-proxy byte offset
+// (identical to GlobalCalcViewData.usf)
+// ============================================================================
+
+void LoadSHGlobal(ByteAddressBuffer shBuffer, uint globalSHByteOffset, uint localSplatIdx,
+	int numTotalCoeffs, out float3 shDC, out float3 sh[15])
+{
+	uint bytesPerSplat = numTotalCoeffs * 3 * 2;
+	uint baseOffset = globalSHByteOffset + localSplatIdx * bytesPerSplat;
+
+	// Load DC coefficient (coeff index 0)
+	{
+		uint alignedOffset = baseOffset & ~3u;
+		uint misalignment = baseOffset & 3u;
+		uint3 data = shBuffer.Load3(alignedOffset);
+
+		if (misalignment == 0)
+		{
+			shDC.x = f16tof32(data.x & 0xFFFF);
+			shDC.y = f16tof32(data.x >> 16);
+			shDC.z = f16tof32(data.y & 0xFFFF);
+		}
+		else
+		{
+			shDC.x = f16tof32(data.x >> 16);
+			shDC.y = f16tof32(data.y & 0xFFFF);
+			shDC.z = f16tof32(data.y >> 16);
+		}
+	}
+
+	// Load higher-order coefficients
+	int numHigherCoeffs = numTotalCoeffs - 1;
+	[unroll]
+	for (int i = 0; i < 15; i++)
+	{
+		if (i < numHigherCoeffs)
+		{
+			uint byteOff = baseOffset + (i + 1) * 6;
+			uint alignedOffset = byteOff & ~3u;
+			uint misalignment = byteOff & 3u;
+			uint3 data = shBuffer.Load3(alignedOffset);
+
+			if (misalignment == 0)
+			{
+				sh[i].x = f16tof32(data.x & 0xFFFF);
+				sh[i].y = f16tof32(data.x >> 16);
+				sh[i].z = f16tof32(data.y & 0xFFFF);
+			}
+			else
+			{
+				sh[i].x = f16tof32(data.x >> 16);
+				sh[i].y = f16tof32(data.y & 0xFFFF);
+				sh[i].z = f16tof32(data.y >> 16);
+			}
+		}
+		else
+		{
+			sh[i] = float3(0, 0, 0);
+		}
+	}
+}
+
+// ============================================================================
+// WriteInvalidSplat
+// ============================================================================
+
+void WriteInvalidSplatCluster(uint outputIndex, uint clusterID, uint lodLevel)
+{
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = float4(0, 0, 0, -1);
+	viewData.TranslatedWorldPos = float3(0, 0, 0);
+	viewData.TranslatedWorldPosPad = 0;
+	viewData.PackedColorRG = 0;
+	viewData.PackedColorBA = 0;
+	viewData.Axis1 = float2(0, 0);
+	viewData.Axis2 = float2(0, 0);
+	viewData.ClusterID = clusterID;
+	viewData.Padding = lodLevel;
+	ClusterViewDataBuffer[outputIndex] = viewData;
+}
+
+// ============================================================================
+// Groupshared per-proxy data (loaded once by thread 0, shared across 128 threads)
+// ============================================================================
+
+groupshared float  gs_LocalToWorld[16];
+groupshared float  gs_OpacityScale;
+groupshared float  gs_SplatScale;
+groupshared uint   gs_SHOrder;
+groupshared uint   gs_NumSHCoeffs;
+groupshared uint   gs_UseSHRendering;
+groupshared uint   gs_SHBytesPerSplat;
+groupshared uint   gs_GlobalSHByteOffset;
+groupshared uint   gs_GlobalSplatStart;
+groupshared uint   gs_GlobalSplatStartIndex;
+groupshared uint   gs_SplatCount;
+groupshared uint   gs_OutputOffset;
+groupshared uint   gs_GlobalClusterIndex;
+groupshared uint   gs_OriginalSplatCount;
+groupshared uint   gs_GlobalSelectedClusterStart;
+
+// ============================================================================
+// MainCS -- One thread group per visible cluster
+// ============================================================================
+
+[numthreads(128, 1, 1)]
+void MainCS(uint3 GroupID : SV_GroupID, uint3 GroupThreadID : SV_GroupThreadID)
+{
+	// --- PER-GROUP SETUP (thread 0 loads, broadcasts via groupshared) ---
+	if (GroupThreadID.x == 0)
+	{
+		uint4 work = VisibleClusterWorkList[GroupID.x];
+		uint globalClusterIdx = work.x;
+		uint metadataIdx      = work.y;
+		uint globalSplatStart = work.z;
+		uint splatCount       = work.w;
+
+		FProxyMetadata meta = ProxyMetadataBuffer[metadataIdx];
+		FProxyRenderParams params = ProxyRenderParamsBuffer[metadataIdx];
+
+		// Copy transform to groupshared
+		[unroll] for (int i = 0; i < 4; i++)
+		{
+			gs_LocalToWorld[i*4+0] = meta.LocalToWorld[i].x;
+			gs_LocalToWorld[i*4+1] = meta.LocalToWorld[i].y;
+			gs_LocalToWorld[i*4+2] = meta.LocalToWorld[i].z;
+			gs_LocalToWorld[i*4+3] = meta.LocalToWorld[i].w;
+		}
+
+		gs_OpacityScale = params.OpacityScale;
+		gs_SplatScale = params.SplatScale;
+		gs_SHOrder = params.SHOrder;
+		gs_NumSHCoeffs = params.NumSHCoeffs;
+		gs_UseSHRendering = params.UseSHRendering;
+		gs_SHBytesPerSplat = params.SHBytesPerSplat;
+		gs_GlobalSHByteOffset = meta.GlobalSHByteOffset;
+		gs_GlobalSplatStart = globalSplatStart;
+		gs_GlobalSplatStartIndex = meta.GlobalSplatStartIndex;
+		gs_SplatCount = splatCount;
+		gs_OutputOffset = ClusterOutputOffsetsBuffer[GroupID.x];
+		gs_GlobalClusterIndex = globalClusterIdx;
+		gs_OriginalSplatCount = meta.OriginalSplatCount;
+		gs_GlobalSelectedClusterStart = meta.GlobalSelectedClusterStart;
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	// --- PER-THREAD SPLAT PROCESSING ---
+	// Loop to handle clusters with > 128 splats (rare, mostly LOD parents)
+	for (uint localIdx = GroupThreadID.x;
+		 localIdx < gs_SplatCount;
+		 localIdx += 128)
+	{
+		uint outputIdx = gs_OutputOffset + localIdx;
+
+		// Budget cap
+		if (MaxRenderBudget > 0 && outputIdx >= MaxRenderBudget)
+			break;
+
+		uint globalSplatIdx = gs_GlobalSplatStart + localIdx;
+
+		// Reconstruct localToWorld matrix from groupshared
+		float4x4 localToWorld;
+		localToWorld[0] = float4(gs_LocalToWorld[0], gs_LocalToWorld[1],
+		                         gs_LocalToWorld[2], gs_LocalToWorld[3]);
+		localToWorld[1] = float4(gs_LocalToWorld[4], gs_LocalToWorld[5],
+		                         gs_LocalToWorld[6], gs_LocalToWorld[7]);
+		localToWorld[2] = float4(gs_LocalToWorld[8], gs_LocalToWorld[9],
+		                         gs_LocalToWorld[10], gs_LocalToWorld[11]);
+		localToWorld[3] = float4(gs_LocalToWorld[12], gs_LocalToWorld[13],
+		                         gs_LocalToWorld[14], gs_LocalToWorld[15]);
+
+		float opacityScale = gs_OpacityScale;
+		float splatScale = gs_SplatScale;
+
+		// --- Cluster debug info ---
+		uint localSplatIdx = globalSplatIdx - gs_GlobalSplatStartIndex;
+		bool isLODSplat = (localSplatIdx >= gs_OriginalSplatCount);
+		uint clusterIndex = GlobalSplatClusterIndexBuffer[gs_GlobalSplatStartIndex + localSplatIdx];
+
+		uint selectedClusterID = clusterIndex;
+		uint selectedLODLevel = isLODSplat ? 1 : 0;
+
+		if (!isLODSplat)
+		{
+			uint globalSelectedIdx = gs_GlobalSelectedClusterStart + clusterIndex;
+			uint packedSelected = ShadowSelectedClusterBuffer[globalSelectedIdx];
+			selectedClusterID = packedSelected & 0x00FFFFFF;
+			selectedLODLevel = (packedSelected >> 24) & 0xFF;
+		}
+
+		// --- ProcessSplat logic (identical to GlobalCalcViewData.usf) ---
+
+		// Unpack splat data from global packed buffer
+		FUnpackedSplat splat = UnpackSplat(GlobalPackedSplatBuffer, globalSplatIdx);
+
+		float3 localPos = splat.Position;
+		float4 rotation = splat.Rotation;
+		float3 scale = splat.Scale * splatScale;
+		float4 colorOpacity = splat.ColorOpacity;
+		float opacity = colorOpacity.a * opacityScale;
+
+		// Transform to world space
+		float4 worldPos = mul(float4(localPos, 1.0), localToWorld);
+		float4 clipPos = mul(worldPos, WorldToClip);
+
+		// Translated world position for velocity calculation
+		float3 translatedWorldPos = worldPos.xyz + PreViewTranslation;
+
+		// Cull if behind camera
+		if (clipPos.w <= 0.0)
+		{
+			WriteInvalidSplatCluster(outputIdx, selectedClusterID, selectedLODLevel);
+			continue;
+		}
+
+		// Transform to view space
+		float4 viewPos = mul(worldPos, WorldToView);
+
+		// Clamp view position to prevent extreme projections
+		float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
+		float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
+		float limX = 1.3 * tanFovX;
+		float limY = 1.3 * tanFovY;
+		viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
+		viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
+
+		// Calculate covariance
+		float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
+		float3x3 localToWorldRot = (float3x3)localToWorld;
+		float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+		float3x3 viewMat = (float3x3)WorldToView;
+		float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+
+		// Decompose to axes
+		float2 axis1, axis2;
+		DecomposeCovariance2D(cov2D, axis1, axis2);
+
+		// Convert to NDC
+		axis1 = axis1 / ScreenSize * 4.0;
+		axis2 = axis2 / ScreenSize * 4.0;
+
+		// Safety clamp
+		float maxAxisSize = 2.0;
+		if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
+		{
+			axis1 = float2(0.01, 0.0);
+		}
+		if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
+		{
+			axis2 = float2(0.0, 0.01);
+		}
+
+		// Frustum culling
+		float2 ndcCenter = clipPos.xy / clipPos.w;
+		float2 ndcExtent = abs(axis1) + abs(axis2);
+		if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
+			ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
+		{
+			WriteInvalidSplatCluster(outputIdx, selectedClusterID, selectedLODLevel);
+			continue;
+		}
+
+		// Compute final color
+		float3 finalColor;
+
+		if (gs_UseSHRendering && gs_NumSHCoeffs > 0)
+		{
+			// View-dependent SH rendering
+			float3 shDC;
+			float3 sh[15];
+			LoadSHGlobal(GlobalSHBuffer, gs_GlobalSHByteOffset, localSplatIdx,
+				gs_NumSHCoeffs, shDC, sh);
+
+			// View direction: world space, splat to camera
+			float3 viewDirWorld = normalize(CameraPosition - worldPos.xyz);
+
+			// Transform to local space using transpose of LocalToWorld rotation
+			float3 viewDirLocal = mul(viewDirWorld, transpose((float3x3)localToWorld));
+
+			// UE Local to PLY space (hardcoded coordinate conversion)
+			float3 viewDirPLY = float3(viewDirLocal.y, -viewDirLocal.z, viewDirLocal.x);
+
+			// Negate for SH training convention (camera→splat direction)
+			viewDirPLY = -viewDirPLY;
+
+			// Compensate for Y-axis flip in position transform
+			viewDirPLY.y = -viewDirPLY.y;
+
+			// Evaluate SH
+			float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, gs_SHOrder);
+
+			// Convert to linear color
+			shColor = 0.5 + shColor;
+			finalColor = pow(max(shColor, 0.0), 2.2);
+		}
+		else
+		{
+			// DC-only: sRGB → linear
+			finalColor = pow(max(colorOpacity.rgb, 0.0), 2.2);
+		}
+
+		// Write view data
+		FGaussianSplatViewData viewData;
+		viewData.ClipPosition = clipPos;
+		viewData.TranslatedWorldPos = translatedWorldPos;
+		viewData.TranslatedWorldPosPad = 0;
+		viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
+		viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
+		viewData.Axis1 = axis1;
+		viewData.Axis2 = axis2;
+		viewData.ClusterID = selectedClusterID;
+		viewData.Padding = selectedLODLevel;
+		ClusterViewDataBuffer[outputIdx] = viewData;
+	}
+}

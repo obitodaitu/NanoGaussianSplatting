@@ -670,7 +670,7 @@ PASS CONDITION:
 ================================================================================
 STAGE 3 -- ClusterCalcViewData Shader
 ================================================================================
-Status: [ ] Not started
+Status: [x] Complete
 
 GOAL:
   Each thread group processes one visible cluster using groupshared proxy data.

@@ -450,6 +450,11 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							RHICmdList, *SceneView, ProcessedProxies,
 							RawAccumulator, MaxRenderBudget);
 
+						// [NEW] Cluster CalcViewData (parallel test, old path continues)
+						// Must run after step 5 which uploads ProxyRenderParams.
+						RawSplatBufferManager->DispatchClusterCalcViewData(
+							RHICmdList, *SceneView, RawAccumulator, MaxRenderBudget);
+
 						// 6. CalcDistances + RadixSort (indirect, GPU-driven counts)
 						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
 						FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);

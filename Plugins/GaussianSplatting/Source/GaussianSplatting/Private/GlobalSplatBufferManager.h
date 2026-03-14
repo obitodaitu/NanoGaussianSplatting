@@ -217,6 +217,10 @@ struct FGlobalSplatBufferManager
 	FBufferRHIRef TestDrawIndirectArgs;
 	FUnorderedAccessViewRHIRef TestDrawIndirectArgsUAV;
 
+	/** Shadow ViewData buffer for cluster CalcViewData test mode. */
+	FBufferRHIRef ShadowClusterViewDataBuffer;
+	FUnorderedAccessViewRHIRef ShadowClusterViewDataBufferUAV;
+
 	bool bClusterWorkListBuffersAllocated = false;
 
 	/** GPU readback objects for cluster work list test (multi-frame). */
@@ -233,6 +237,13 @@ struct FGlobalSplatBufferManager
 	TUniquePtr<FRHIGPUBufferReadback> PrefixTest_OldDrawArgsReadback;
 	TUniquePtr<FRHIGPUBufferReadback> PrefixTest_NewDrawArgsReadback;
 	bool bPrefixTestWaitingForReadback = false;
+
+	/** GPU readback objects for cluster CalcViewData test (multi-frame). */
+	TUniquePtr<FRHIGPUBufferReadback> CalcViewTest_NewReadback;
+	TUniquePtr<FRHIGPUBufferReadback> CalcViewTest_OldReadback;
+	TUniquePtr<FRHIGPUBufferReadback> CalcViewTest_CountReadback;
+	uint32 CalcViewTest_TotalVisible = 0;
+	bool bCalcViewTestWaitingForReadback = false;
 
 	//------------------------------------------------------------------------
 	// Global SH buffer (static, concatenated raw bytes from all proxies)
@@ -382,6 +393,17 @@ struct FGlobalSplatBufferManager
 	void DispatchBuildVisibleClusterWorkList(
 		FRHICommandListImmediate& RHICmdList,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
+
+	/**
+	 * Dispatch ClusterCalcViewData shader.
+	 * One thread group per visible cluster, groupshared proxy data.
+	 * Writes to ShadowClusterViewDataBuffer (test mode) or GlobalViewDataBuffer.
+	 */
+	void DispatchClusterCalcViewData(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		uint32 MaxRenderBudget);
 
 	/**
 	 * Dispatch ClusterPrefixSum shader.
