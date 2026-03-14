@@ -5,25 +5,10 @@
 #include "CoreMinimal.h"
 #include "RHI.h"
 #include "RHIResources.h"
-#include "RHIGPUReadback.h"
 
 class FGaussianSplatSceneProxy;
 class FSceneView;
 struct FGaussianGlobalAccumulator;
-
-/**
- * Work item produced by BuildVisibleClusterWorkList: one per visible cluster.
- * Stored in VisibleClusterWorkList as uint4 (16 bytes).
- */
-struct FVisibleClusterWorkItem
-{
-	uint32 GlobalClusterIndex;   // Index into GlobalClusterBuffer
-	uint32 MetadataIndex;        // Proxy index into ProxyMetadataBuffer
-	uint32 GlobalSplatStart;     // First splat in GlobalPackedSplatBuffer
-	uint32 SplatCount;           // Number of splats to process
-};
-
-static_assert(sizeof(FVisibleClusterWorkItem) == 16, "FVisibleClusterWorkItem must be 16 bytes (uint4)");
 
 /**
  * Per-proxy GPU metadata uploaded to ProxyMetadataBuffer each frame.
@@ -180,36 +165,6 @@ struct FGlobalSplatBufferManager
 	bool bShadowViewDataBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
-	// Cluster-based CalcViewData buffers (new pipeline)
-	//------------------------------------------------------------------------
-
-	/** Work item: one per visible cluster. uint4 (16 bytes) each. */
-	FBufferRHIRef VisibleClusterWorkList;
-	FUnorderedAccessViewRHIRef VisibleClusterWorkListUAV;
-	FShaderResourceViewRHIRef VisibleClusterWorkListSRV;
-
-	/** Atomic counter: number of visible clusters appended. Single uint32. */
-	FBufferRHIRef VisibleClusterCountBuffer;
-	FUnorderedAccessViewRHIRef VisibleClusterCountBufferUAV;
-	FShaderResourceViewRHIRef VisibleClusterCountBufferSRV;
-
-	/** Per visible cluster splat count (parallel to work list). */
-	FBufferRHIRef ClusterSplatCountsBuffer;
-	FUnorderedAccessViewRHIRef ClusterSplatCountsBufferUAV;
-	FShaderResourceViewRHIRef ClusterSplatCountsBufferSRV;
-
-	bool bClusterWorkListBuffersAllocated = false;
-
-	/** GPU readback objects for cluster work list test (multi-frame). */
-	TUniquePtr<FRHIGPUBufferReadback> ClusterTest_CountReadback;
-	TUniquePtr<FRHIGPUBufferReadback> ClusterTest_SplatCountsReadback;
-	TUniquePtr<FRHIGPUBufferReadback> ClusterTest_OldVisibleReadback;
-	TUniquePtr<FRHIGPUBufferReadback> ClusterTest_WorkItemsReadback;
-	uint32 ClusterTest_MaxReadbackClusters = 0;
-	uint32 ClusterTest_ProxyCount = 0;
-	bool bClusterTestWaitingForReadback = false;
-
-	//------------------------------------------------------------------------
 	// Global SH buffer (static, concatenated raw bytes from all proxies)
 	//------------------------------------------------------------------------
 
@@ -338,25 +293,6 @@ struct FGlobalSplatBufferManager
 		FRHICommandListImmediate& RHICmdList,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
 		FGaussianGlobalAccumulator* GlobalAccumulator);
-
-	//------------------------------------------------------------------------
-	// Cluster-based CalcViewData: Build visible cluster work list
-	//------------------------------------------------------------------------
-
-	/**
-	 * Allocate cluster work list buffers.
-	 * Called lazily on first dispatch. Resized when totals change.
-	 */
-	void EnsureClusterWorkListBuffers(FRHICommandListImmediate& RHICmdList);
-
-	/**
-	 * Dispatch BuildVisibleClusterWorkList shaders (Reset + Leaf + LOD).
-	 * Runs AFTER DispatchGlobalClusterCulling, IN PARALLEL with old compact path.
-	 * Produces VisibleClusterWorkList + VisibleClusterCount + ClusterSplatCounts.
-	 */
-	void DispatchBuildVisibleClusterWorkList(
-		FRHICommandListImmediate& RHICmdList,
-		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

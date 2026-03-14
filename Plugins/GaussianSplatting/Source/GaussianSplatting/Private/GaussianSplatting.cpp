@@ -429,10 +429,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						RawSplatBufferManager->DispatchGlobalCompactSplats(
 							RHICmdList, ProcessedProxies);
 
-						// [NEW] Build visible cluster work list (parallel test, old path continues)
-						RawSplatBufferManager->DispatchBuildVisibleClusterWorkList(
-							RHICmdList, ProcessedProxies);
-
 						// 3. Gather visible counts: reorder counts → GlobalVisibleCountArray
 						RawSplatBufferManager->DispatchGatherVisibleCountsGlobal(
 							RHICmdList, ProcessedProxies, RawAccumulator);

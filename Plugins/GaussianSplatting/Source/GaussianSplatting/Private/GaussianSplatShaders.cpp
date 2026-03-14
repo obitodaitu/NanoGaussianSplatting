@@ -36,10 +36,5 @@ IMPLEMENT_GLOBAL_SHADER(FGlobalCalcViewDataCS, "/Plugin/GaussianSplatting/Privat
 // Gather visible counts global
 IMPLEMENT_GLOBAL_SHADER(FGatherVisibleCountsGlobalCS, "/Plugin/GaussianSplatting/Private/GatherVisibleCountsGlobal.usf", "MainCS", SF_Compute);
 
-// Build visible cluster work list (cluster-based CalcViewData pipeline)
-IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListResetCS, "/Plugin/GaussianSplatting/Private/BuildVisibleClusterWorkList.usf", "ResetCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListCS, "/Plugin/GaussianSplatting/Private/BuildVisibleClusterWorkList.usf", "LeafCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListLODCS, "/Plugin/GaussianSplatting/Private/BuildVisibleClusterWorkList.usf", "LODCS", SF_Compute);
-
 // Compaction prefix-sum shaders
 IMPLEMENT_GLOBAL_SHADER(FPrefixSumVisibleCountsCS,  "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);

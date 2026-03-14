@@ -148,14 +148,36 @@ KEY NEW DATA STRUCTURES:
   ClusterSplatCounts buffer          -- parallel array, SplatCount per visible cluster
 
 ================================================================================
-4. PREREQUISITE -- Fix Metadata Ordering Bug                    [x] FIXED
+4. PREREQUISITE -- Fix Metadata Ordering Bug
 ================================================================================
 
-FIXED: Changed UploadProxyMetadata() in UpdateIfNeeded() to use LastProxySet
-(rebuild-time order) instead of distance-sorted ValidProxies. This ensures
-cumulative offsets match the GlobalPackedSplatBuffer layout.
+Before implementing the cluster-based approach, fix the metadata ordering bug
+that causes visual corruption (flashing/disappearing assets).
 
-FILE: GlobalSplatBufferManager.cpp, line 68
+FILE: GlobalSplatBufferManager.cpp, UploadProxyMetadata()
+
+CURRENT (BROKEN):
+    UploadProxyMetadata receives ValidProxies in distance-sorted order.
+    Computes cumulative offsets: GlobalSplatStartIndex, GlobalClusterStartIndex, etc.
+    But GlobalPackedSplatBuffer was built in LastProxySet order (rebuild-time order).
+    When sort order changes, offsets don't match buffer layout.
+
+FIX:
+    UploadProxyMetadata must iterate over LastProxySet (rebuild-time order),
+    NOT the distance-sorted ValidProxies. The cumulative offsets must always
+    match the static buffer concatenation order.
+
+    Change: In UpdateIfNeeded(), pass LastProxySet to UploadProxyMetadata
+    instead of the filtered ValidProxies from the current frame.
+
+    Note: The transform and per-proxy parameters (opacity, LOD threshold) are
+    read from the proxy pointer, which is valid regardless of iteration order.
+    Only the cumulative offset computation must use LastProxySet order.
+
+VERIFICATION:
+    - No more flashing/disappearing when moving camera close to assets
+    - Proxy sort order changes (camera movement) don't affect rendering
+    - Visually identical from all camera angles
 
 ================================================================================
 5. IMPLEMENTATION STAGES
@@ -620,8 +642,8 @@ PASS CONDITION:
 6. PROGRESS TRACKER
 ================================================================================
 
-  PREREQUISITE -- Fix Metadata Ordering Bug     [x] Fixed
-  STAGE A -- BuildVisibleClusterWorkList        [x] Complete
+  PREREQUISITE -- Fix Metadata Ordering Bug     [ ] Not Started
+  STAGE A -- BuildVisibleClusterWorkList        [ ] Not Started
   STAGE B -- ClusterPrefixSum                   [ ] Not Started
   STAGE C -- ClusterCalcViewData Shader         [ ] Not Started
   STAGE D -- Integration + Remove Old Passes    [ ] Not Started
