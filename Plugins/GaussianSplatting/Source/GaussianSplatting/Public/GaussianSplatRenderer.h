@@ -95,31 +95,6 @@ public:
 	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
 	// in the unified approach. LOD splats are now processed by DispatchCalcViewData.
 
-	//----------------------------------------------------------------------
-	// Splat Compaction (GPU-driven work reduction)
-	//----------------------------------------------------------------------
-
-	/**
-	 * Dispatch the splat compaction compute shader
-	 * Builds a compact list of visible splat indices using atomics
-	 */
-	static void DispatchCompactSplats(
-		FRHICommandListImmediate& RHICmdList,
-		FGaussianSplatGPUResources* GPUResources,
-		int32 TotalSplatCount,
-		int32 OriginalSplatCount,
-		bool bUseLODRendering
-	);
-
-	/**
-	 * Dispatch the prepare indirect args compute shader
-	 * Prepares indirect dispatch and draw arguments from visible splat count
-	 */
-	static void DispatchPrepareIndirectArgs(
-		FRHICommandListImmediate& RHICmdList,
-		FGaussianSplatGPUResources* GPUResources
-	);
-
 	/**
 	 * Dispatch CalcViewData with compaction (indirect dispatch)
 	 * Only processes visible splats from compacted list
@@ -201,22 +176,10 @@ public:
 
 	//----------------------------------------------------------------------
 	// Global Accumulator + Nanite Compaction dispatch (one-draw-call path)
-	// Phase sequence: GatherVisibleCount × N → PrefixSumVisibleCounts ×1 →
-	//   CalcViewDataCompactedGlobal × N → CalcDistancesGlobalIndirect ×1 →
+	// Phase sequence: PrefixSumVisibleCounts ×1 →
+	//   CalcDistancesGlobalIndirect ×1 →
 	//   RadixSortGlobalIndirect ×1 → DrawSplatsGlobalIndirect ×1
 	//----------------------------------------------------------------------
-
-	/**
-	 * Copy GPUResources->VisibleSplatCountBuffer[0] into
-	 * GlobalAccumulator->GlobalVisibleCountArrayBuffer[ProxyIndex].
-	 * Dispatch: (1,1,1) per proxy, after DispatchCompactSplats.
-	 */
-	static void DispatchGatherVisibleCount(
-		FRHICommandListImmediate& RHICmdList,
-		FGaussianSplatGPUResources* GPUResources,
-		FGaussianGlobalAccumulator* GlobalAccumulator,
-		int32 ProxyIndex
-	);
 
 	/**
 	 * Compute exclusive prefix sums over GlobalVisibleCountArray and write
@@ -227,26 +190,6 @@ public:
 		FRHICommandListImmediate& RHICmdList,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
 		int32 ProxyCount,
-		uint32 MaxRenderBudget
-	);
-
-	/**
-	 * CalcViewData for proxy ProxyIndex, writing into GlobalViewDataBuffer
-	 * at offset GlobalBaseOffsetsBuffer[ProxyIndex].
-	 * Uses IndirectDispatchArgsBuffer from GPUResources (set by PrepareIndirectArgs).
-	 */
-	static void DispatchCalcViewDataCompactedGlobal(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		int32 SplatCount,
-		int32 OriginalSplatCount,
-		int32 SHOrder,
-		float OpacityScale,
-		float SplatScale,
-		int32 ProxyIndex,
-		FGaussianGlobalAccumulator* GlobalAccumulator,
 		uint32 MaxRenderBudget
 	);
 

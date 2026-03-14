@@ -1,0 +1,702 @@
+================================================================================
+CLUSTER-BASED CALCVIEWDATA PLAN
+================================================================================
+Status Legend:  [ ] Not started   [~] In progress   [x] Complete
+
+================================================================================
+1. PROBLEM
+================================================================================
+
+DispatchPlan V2 replaced per-proxy dispatch loops with single global dispatches
+to eliminate CPU dispatch overhead (~9-10ms from 500 dispatches at ~40us each).
+
+The CPU savings materialized for some passes, but the GPU got SLOWER overall:
+
+    Pass                        Before V2       After V2        Delta
+    ------------------------------------------------------------------
+    ClusterCulling              1.0ms (100x)    65us (1x)       -94%  WIN
+    CompactSplats               1.4ms (100x)    1.9ms (1x)      +36%  LOSS
+    PrepareIndirectArgs         631us (90x)     eliminated       -100% WIN
+    GatherVisibleCount          474us (100x)    12us (1x)        -97%  WIN
+    Repack+CalcViewData         4.2ms (100x)    7.5ms (1x)       +79%  LOSS <<<
+    CalcDistances               348us           369us            ~same
+    RadixSort                   1.6ms           1.8ms            ~same
+    DrawSplatsGlobal            5.0ms           5.9ms            +18%
+    ------------------------------------------------------------------
+    TOTAL GPU                   ~14.7ms         ~17.5ms          +19%  WORSE
+
+ROOT CAUSE -- Why Repack+CalcViewData Got Slower:
+
+The V2 global approach treats every INDIVIDUAL SPLAT as the unit of work.
+Each of the millions of CalcViewData threads must:
+
+  1. Read ShadowRepackedSplatIndices[threadIdx]      -- random buffer read
+  2. Binary search ProxyMetadataBuffer (~7 iterations) -- 7 random reads
+  3. Read ProxyMetadataBuffer[proxyIdx] (128 bytes)   -- buffer read
+  4. Read ProxyRenderParamsBuffer[proxyIdx] (32 bytes) -- buffer read
+  5. Read GlobalPackedSplatBuffer[globalSplatIdx]      -- random position in giant buffer
+  6. Actual CalcViewData math...
+
+The OLD per-proxy path had NONE of this overhead:
+
+  1. Read PackedSplatBuffer[threadIdx]   -- sequential access within proxy
+  2. Actual CalcViewData math...         -- transform from constant buffer (free)
+
+The old path used constant buffers for per-proxy data (transform, opacity,
+SH order), which are cached in GPU registers. The new path reads them from
+structured buffers, which requires memory fetch per thread. With millions of
+threads, this adds up.
+
+Additionally, the Repack pass is entirely new overhead (copies scattered
+compacted indices into dense layout), and CompactSplats itself iterates over
+ALL 2M splats even though only ~50K are visible, doing a binary search per splat.
+
+SEPARATE BUG -- Metadata Ordering Mismatch:
+
+UploadProxyMetadata() receives proxies sorted by camera distance, which changes
+every frame as the camera moves. But GlobalPackedSplatBuffer was concatenated
+in the order from RebuildStaticBuffers (a different sort order from a previous
+frame). The metadata says "Proxy B's splats start at offset 0" but the actual
+data at offset 0 belongs to Proxy A (which was first during the rebuild).
+
+Result: wrong transforms applied to splats -> flashing/disappearing assets.
+Worse when close to camera (proximity causes more frequent sort reordering).
+This must be fixed regardless of the performance optimization.
+
+================================================================================
+2. KEY INSIGHT -- Learn From Nanite
+================================================================================
+
+Nanite (Unreal Engine's mesh rendering system) faces the same problem: millions
+of triangles across hundreds of meshes. Nanite's solution:
+
+  1. Cluster culling -> produces list of visible clusters (~5000 out of 200,000)
+  2. ONE dispatch per visible cluster -> each thread group processes all ~128
+     triangles within that cluster
+  3. Proxy data (transform, material) loaded ONCE per thread group, shared
+     across all threads via groupshared memory
+
+Nanite NEVER iterates over individual triangles to check visibility or do
+binary search. The cluster is the atomic unit of work.
+
+Our V2 approach violates this: after cluster culling identifies visible clusters,
+we IMMEDIATELY DROP DOWN to individual splats (CompactSplats iterates 2M splats,
+CalcViewData does binary search per splat). This destroys the benefits of
+cluster-level culling.
+
+================================================================================
+3. SOLUTION -- Cluster-Based CalcViewData
+================================================================================
+
+Replace CompactSplats + GatherVisible + Repack + GlobalCalcViewData with:
+
+  1. BuildVisibleClusterWorkList  -- scan culling output, build flat list of
+                                     active clusters with precomputed offsets
+  2. ClusterPrefixSum             -- prefix sum on per-cluster splat counts
+                                     -> dense output offsets + TotalVisible
+  3. ClusterCalcViewData          -- ONE thread group per visible cluster,
+                                     processes all splats with shared proxy data
+
+PROPOSED PIPELINE:
+
+    Pass                                Dispatches      GPU Cost (est.)
+    -------------------------------------------------------------------
+    GlobalClusterCulling                1               ~65us (unchanged)
+    BuildVisibleClusterWorkList         2 (leaf + LOD)  ~20us (new, tiny)
+    ClusterPrefixSum + WriteIndirectArgs 1              ~10us (new, tiny)
+    ClusterCalcViewData                 1 (indirect)    ~2-3ms (new)
+    CalcDistancesGlobalIndirect         1               ~350us (unchanged)
+    RadixSortGlobalIndirect             16              ~1.6ms (unchanged)
+    DrawSplatsGlobalIndirect            1               ~5ms (unchanged)
+    -------------------------------------------------------------------
+    TOTAL                               ~23             ~9-10ms
+
+PASSES ELIMINATED:
+    CompactSplats                       removed         (was 1.9ms)
+    GatherVisibleCountsGlobal           removed         (was 12us)
+    Repack                              removed         (was part of 7.5ms)
+    GlobalCalcViewData                  replaced        (was part of 7.5ms)
+
+WHY ClusterCalcViewData IS FASTER:
+
+  Per thread group (ONCE, shared across all 128 threads):
+    1. Read VisibleClusterWorkList[groupIdx]          -- sequential read
+    2. Read ProxyMetadataBuffer[metadataIdx] (128B)   -- shared to groupshared
+    3. Read ProxyRenderParamsBuffer[metadataIdx] (32B) -- shared to groupshared
+    4. Compute WorldToPLY matrix                       -- shared
+
+  Per thread:
+    1. Read GlobalPackedSplatBuffer[globalSplatStart + localIdx]  -- SEQUENTIAL
+    2. CalcViewData math using shared proxy data                  -- from groupshared
+    3. Write to GlobalViewDataBuffer[outputOffset + localIdx]     -- SEQUENTIAL
+
+  No binary search per splat. No repacked index indirection.
+  Sequential memory access within each cluster.
+  Proxy data in fast groupshared memory instead of per-thread buffer reads.
+
+KEY NEW DATA STRUCTURES:
+
+  FVisibleClusterWorkItem (16 bytes):
+      uint GlobalClusterIndex       -- for debug visualization (ClusterID/LODLevel)
+      uint MetadataIndex            -- proxy index into ProxyMetadataBuffer
+      uint GlobalSplatStart         -- first splat in GlobalPackedSplatBuffer
+      uint SplatCount               -- number of splats to process
+
+  VisibleClusterWorkList buffer      -- up to TotalClusterCount work items
+  VisibleClusterCount buffer         -- single uint32, atomic counter
+  ClusterOutputOffsets buffer        -- prefix sum of SplatCounts
+  ClusterSplatCounts buffer          -- parallel array, SplatCount per visible cluster
+
+================================================================================
+4. PREREQUISITE -- Fix Metadata Ordering Bug
+================================================================================
+
+Before implementing the cluster-based approach, fix the metadata ordering bug
+that causes visual corruption (flashing/disappearing assets).
+
+FILE: GlobalSplatBufferManager.cpp, UploadProxyMetadata()
+
+CURRENT (BROKEN):
+    UploadProxyMetadata receives ValidProxies in distance-sorted order.
+    Computes cumulative offsets: GlobalSplatStartIndex, GlobalClusterStartIndex, etc.
+    But GlobalPackedSplatBuffer was built in LastProxySet order (rebuild-time order).
+    When sort order changes, offsets don't match buffer layout.
+
+FIX:
+    UploadProxyMetadata must iterate over LastProxySet (rebuild-time order),
+    NOT the distance-sorted ValidProxies. The cumulative offsets must always
+    match the static buffer concatenation order.
+
+    Change: In UpdateIfNeeded(), pass LastProxySet to UploadProxyMetadata
+    instead of the filtered ValidProxies from the current frame.
+
+    Note: The transform and per-proxy parameters (opacity, LOD threshold) are
+    read from the proxy pointer, which is valid regardless of iteration order.
+    Only the cumulative offset computation must use LastProxySet order.
+
+VERIFICATION:
+    - No more flashing/disappearing when moving camera close to assets
+    - Proxy sort order changes (camera movement) don't affect rendering
+    - Visually identical from all camera angles
+
+================================================================================
+5. IMPLEMENTATION STAGES
+================================================================================
+
+--------------------------------------------------------------------------------
+STAGE A -- BuildVisibleClusterWorkList Shader                  [ ] Not Started
+--------------------------------------------------------------------------------
+
+GOAL: After GlobalClusterCulling, produce a flat array of active clusters
+(both leaf clusters that are directly visible and LOD parent clusters whose
+simplified splats should render). This replaces CompactSplats which iterated
+over all 2M individual splats.
+
+FILES TO ADD:
+    Shaders/Private/BuildVisibleClusterWorkList.usf
+    GaussianSplatShaders.h/.cpp  (FBuildVisibleClusterWorkListCS,
+                                  FBuildVisibleClusterWorkListLODCS,
+                                  FBuildVisibleClusterWorkListResetCS)
+
+FILES TO MODIFY:
+    GlobalSplatBufferManager.h/.cpp  (new buffers + dispatch function)
+
+NEW GPU BUFFERS:
+    VisibleClusterWorkList       -- StructuredBuffer<FVisibleClusterWorkItem>
+                                    Size: TotalClusterCount entries (worst case)
+    VisibleClusterCount          -- StructuredBuffer<uint>, 1 entry (atomic counter)
+    ClusterSplatCounts           -- StructuredBuffer<uint>, TotalClusterCount entries
+                                    (parallel array, SplatCount per visible cluster)
+
+SHADER: BuildVisibleClusterWorkListResetCS
+    Dispatch: (1, 1, 1)
+    Clears VisibleClusterCount to 0.
+
+SHADER: BuildVisibleClusterWorkListCS (leaf clusters)
+    Dispatch: (ceil(TotalLeafClusterCount / 64), 1, 1)
+    Runs AFTER GlobalClusterCulling.
+
+    Algorithm per thread:
+        globalLeafIdx = SV_DispatchThreadID.x
+        if (globalLeafIdx >= TotalLeafClusterCount) return
+
+        // Binary search for proxy (O(log N), done per CLUSTER not per splat)
+        proxyIdx = BinarySearch(globalLeafIdx, ProxyMetadataBuffer, GlobalLeafClusterEnd)
+        metadata = ProxyMetadataBuffer[proxyIdx]
+
+        // Compute local and global cluster indices
+        prevLeafEnd = (proxyIdx > 0) ? ProxyMetadataBuffer[proxyIdx-1].GlobalLeafClusterEnd : 0
+        localLeafIdx = globalLeafIdx - prevLeafEnd
+        globalClusterIdx = metadata.GlobalClusterStartIndex + localLeafIdx
+
+        // Check 1: Is leaf visible? (frustum culled by GlobalClusterCulling)
+        bitmapWord = metadata.GlobalVisibilityBitmapStart + (localLeafIdx / 32)
+        if (!(ShadowClusterVisibilityBitmap[bitmapWord] & (1 << (localLeafIdx % 32))))
+            return  // culled
+
+        // Check 2: Is leaf the active cluster? (not covered by LOD parent)
+        globalSelectedIdx = metadata.GlobalSelectedClusterStart + localLeafIdx
+        packedSelected = ShadowSelectedClusterBuffer[globalSelectedIdx]
+        selectedClusterID = packedSelected & 0x00FFFFFF
+        if (selectedClusterID != globalClusterIdx)
+            return  // covered by LOD parent, LOD parent will render instead
+
+        // This leaf is active! Read its splat range.
+        cluster = GlobalClusterBuffer[globalClusterIdx]
+
+        // Append to work list
+        workIdx = atomicAdd(VisibleClusterCount[0], 1)
+        VisibleClusterWorkList[workIdx].GlobalClusterIndex = globalClusterIdx
+        VisibleClusterWorkList[workIdx].MetadataIndex = proxyIdx
+        VisibleClusterWorkList[workIdx].GlobalSplatStart =
+            metadata.GlobalSplatStartIndex + cluster.SplatStartIndex
+        VisibleClusterWorkList[workIdx].SplatCount = cluster.SplatCount
+        ClusterSplatCounts[workIdx] = cluster.SplatCount
+
+SHADER: BuildVisibleClusterWorkListLODCS (LOD parent clusters)
+    Dispatch: INDIRECT using ShadowLODClusterCountBuffer (already GPU-driven)
+
+    Algorithm per thread:
+        lodIdx = SV_DispatchThreadID.x
+        if (lodIdx >= ShadowLODClusterCountBuffer[0]) return
+
+        globalClusterIdx = ShadowLODClusterBuffer[lodIdx]
+        cluster = GlobalClusterBuffer[globalClusterIdx]
+
+        // Find proxy by binary search on cluster index range
+        proxyIdx = BinarySearchCluster(globalClusterIdx)
+        metadata = ProxyMetadataBuffer[proxyIdx]
+
+        // Append to work list
+        workIdx = atomicAdd(VisibleClusterCount[0], 1)
+        VisibleClusterWorkList[workIdx].GlobalClusterIndex = globalClusterIdx
+        VisibleClusterWorkList[workIdx].MetadataIndex = proxyIdx
+        VisibleClusterWorkList[workIdx].GlobalSplatStart =
+            metadata.GlobalSplatStartIndex + cluster.LODSplatStartIndex
+        VisibleClusterWorkList[workIdx].SplatCount = cluster.LODSplatCount
+        ClusterSplatCounts[workIdx] = cluster.LODSplatCount
+
+    Note: BinarySearchCluster needs a cumulative cluster end field per proxy.
+    Add GlobalClusterEnd to FProxyGPUMetadata by repurposing one existing
+    padding field or the ErrorThreshold float (move ErrorThreshold elsewhere).
+
+    Alternative: Since LOD parents already have a global index, and we know
+    GlobalClusterStartIndex + ClusterCount per proxy, we can binary search on
+    (GlobalClusterStartIndex + ClusterCount) as the cumulative end. This just
+    requires adding a new uint32 field. The struct is currently exactly 128
+    bytes with no explicit padding, but ErrorThreshold is the last field.
+    Solution: add GlobalClusterEnd as a new field and increase struct to 132
+    bytes? No -- must remain 128 bytes for HLSL alignment. Instead, compute
+    GlobalClusterEnd = GlobalClusterStartIndex + ClusterCount in the shader
+    and do a linear scan or use a precomputed cumulative array. The simplest
+    approach: precompute a separate CumulativeClusterEnd buffer (ProxyCount
+    uint32s, ~400 bytes) uploaded alongside ProxyMetadataBuffer.
+
+VERIFICATION:
+    Run BuildVisibleClusterWorkList alongside existing CompactSplats.
+    Sum all ClusterSplatCounts entries -> must equal TotalVisible from old path.
+    Compare per-proxy breakdown.
+
+PASS CONDITION:
+    - Sum of SplatCounts across all work items matches old TotalVisible
+    - Verified with static and moving camera
+    - Verified at multiple LOD distances
+
+--------------------------------------------------------------------------------
+STAGE B -- ClusterPrefixSum + WriteIndirectArgs                [ ] Not Started
+--------------------------------------------------------------------------------
+
+GOAL: Compute prefix sum of per-cluster splat counts to determine dense output
+offsets for CalcViewData. Also write indirect dispatch/draw args.
+
+This replaces: GatherVisibleCountsGlobal + old PrefixSum (per-proxy based).
+
+FILES TO ADD:
+    Shaders/Private/ClusterPrefixSum.usf
+
+FILES TO MODIFY:
+    GaussianSplatShaders.h/.cpp  (FClusterPrefixSumCS)
+    GlobalSplatBufferManager.h/.cpp  (new buffers + dispatch)
+
+NEW GPU BUFFERS:
+    ClusterOutputOffsets         -- StructuredBuffer<uint>
+                                    Size: TotalClusterCount + 1
+                                    [i] = exclusive prefix sum of ClusterSplatCounts[0..i-1]
+                                    [VisibleClusterCount] = TotalVisible (sentinel)
+    ClusterCalcViewDataIndirectArgs -- StructuredBuffer<uint>, 3 entries
+                                    For DispatchIndirect of ClusterCalcViewData
+
+SHADER: ClusterPrefixSumCS
+    Dispatch: (1, 1, 1) -- single thread, sequential scan
+
+    The number of visible clusters is typically 1,000-10,000. A single-thread
+    sequential prefix sum at this scale takes <10us on GPU. This matches the
+    design of the existing VISIBLE_PREFIX_SUM_CS which also runs with (1,1,1).
+
+    Algorithm:
+        visibleCount = VisibleClusterCount[0]
+        offset = 0
+        for i = 0 to visibleCount-1:
+            ClusterOutputOffsets[i] = offset
+            offset += ClusterSplatCounts[i]
+            // Budget enforcement:
+            if (MaxRenderBudget > 0 && offset >= MaxRenderBudget):
+                clamp this cluster's allocation, set remaining to 0
+        ClusterOutputOffsets[visibleCount] = offset  // TotalVisible sentinel
+
+        // Write indirect args (same outputs as existing PrefixSum):
+        GlobalCalcDistIndirectArgs = { ceil(offset/256), 1, 1 }
+        GlobalSortIndirectArgs = { ceil(offset/1024), 1, 1 }
+        GlobalSortParams = { offset, numTiles }
+        GlobalDrawIndirectArgs = { 6, offset, 0, 0, 0 }
+
+        // NEW: Write CalcViewData indirect dispatch args
+        // One thread group per visible cluster
+        ClusterCalcViewDataIndirectArgs = { visibleCount, 1, 1 }
+
+    Note: Budget cap is enforced per-cluster (finer granularity than before).
+    Closer clusters naturally get priority because GlobalClusterCulling processes
+    them first, so they tend to appear earlier in the work list.
+
+VERIFICATION:
+    ClusterOutputOffsets[VisibleClusterCount] must equal old TotalVisible.
+    Indirect args must match: GlobalDrawIndirectArgs[1] == TotalVisible.
+    Cross-validate with existing PrefixSum output.
+
+PASS CONDITION:
+    - TotalVisible matches old path exactly
+    - Indirect args are valid (non-zero dispatch groups)
+    - Budget enforcement produces same or tighter cap as before
+
+--------------------------------------------------------------------------------
+STAGE C -- ClusterCalcViewData Shader                          [ ] Not Started
+--------------------------------------------------------------------------------
+
+GOAL: Replace GlobalCalcViewData + Repack with a single shader that processes
+visible splats cluster-by-cluster. Each thread group handles one visible cluster.
+
+This is the core performance improvement.
+
+FILES TO ADD:
+    Shaders/Private/ClusterCalcViewData.usf
+
+FILES TO MODIFY:
+    GaussianSplatShaders.h/.cpp  (FClusterCalcViewDataCS)
+    GlobalSplatBufferManager.h/.cpp  (dispatch function)
+
+SHADER: ClusterCalcViewDataCS
+    Thread group size: [numthreads(128, 1, 1)]
+    Dispatch: INDIRECT using ClusterCalcViewDataIndirectArgs
+              (VisibleClusterCount, 1, 1)
+
+    Each thread group processes one visible cluster.
+    SV_GroupID.x = index into VisibleClusterWorkList.
+
+    Algorithm:
+
+        // --- PER-GROUP SETUP (thread 0 loads, broadcasts via groupshared) ---
+
+        groupshared float   gs_LocalToWorld[16];   // float4x4 as array
+        groupshared float   gs_OpacityScale;
+        groupshared float   gs_SplatScale;
+        groupshared uint    gs_SHOrder;
+        groupshared uint    gs_NumSHCoeffs;
+        groupshared uint    gs_UseSHRendering;
+        groupshared uint    gs_SHBytesPerSplat;
+        groupshared uint    gs_GlobalSHByteOffset;
+        groupshared uint    gs_GlobalSplatStart;
+        groupshared uint    gs_GlobalSplatStartIndex;  // proxy's base in global buffer
+        groupshared uint    gs_SplatCount;
+        groupshared uint    gs_OutputOffset;
+        groupshared uint    gs_GlobalClusterIndex;
+        groupshared uint    gs_OriginalSplatCount;
+        groupshared uint    gs_GlobalSelectedClusterStart;
+
+        if (GroupThreadID.x == 0)
+        {
+            FVisibleClusterWorkItem work = VisibleClusterWorkList[GroupID.x];
+
+            FProxyMetadata meta = ProxyMetadataBuffer[work.MetadataIndex];
+            FProxyRenderParams params = ProxyRenderParamsBuffer[work.MetadataIndex];
+
+            // Copy transform to groupshared
+            for (int i = 0; i < 16; i++)
+                gs_LocalToWorld[i] = meta.LocalToWorld[i]; // (or use float4x4)
+
+            gs_OpacityScale = params.OpacityScale;
+            gs_SplatScale = params.SplatScale;
+            gs_SHOrder = params.SHOrder;
+            gs_NumSHCoeffs = params.NumSHCoeffs;
+            gs_UseSHRendering = params.UseSHRendering;
+            gs_SHBytesPerSplat = params.SHBytesPerSplat;
+            gs_GlobalSHByteOffset = meta.GlobalSHByteOffset;
+            gs_GlobalSplatStart = work.GlobalSplatStart;
+            gs_GlobalSplatStartIndex = meta.GlobalSplatStartIndex;
+            gs_SplatCount = work.SplatCount;
+            gs_OutputOffset = ClusterOutputOffsets[GroupID.x];
+            gs_GlobalClusterIndex = work.GlobalClusterIndex;
+            gs_OriginalSplatCount = meta.OriginalSplatCount;
+            gs_GlobalSelectedClusterStart = meta.GlobalSelectedClusterStart;
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        // --- PER-THREAD SPLAT PROCESSING ---
+        // Loop to handle clusters with > 128 splats (rare, mostly LOD parents)
+
+        for (uint localIdx = GroupThreadID.x;
+             localIdx < gs_SplatCount;
+             localIdx += 128)
+        {
+            uint outputIdx = gs_OutputOffset + localIdx;
+
+            // Budget cap
+            if (MaxRenderBudget > 0 && outputIdx >= MaxRenderBudget)
+                break;
+
+            uint globalSplatIdx = gs_GlobalSplatStart + localIdx;
+
+            // Unpack splat from GlobalPackedSplatBuffer (SEQUENTIAL access!)
+            FUnpackedSplat splat = UnpackSplat(GlobalPackedSplatBuffer, globalSplatIdx);
+
+            float3 localPos = splat.Position;
+            float4 rotation = splat.Rotation;
+            float3 scale    = splat.Scale * gs_SplatScale;
+            float4 colorOp  = splat.ColorOpacity;
+            float  opacity  = colorOp.a * gs_OpacityScale;
+
+            // Reconstruct float4x4 from groupshared array
+            float4x4 localToWorld;
+            localToWorld[0] = float4(gs_LocalToWorld[0], gs_LocalToWorld[1],
+                                     gs_LocalToWorld[2], gs_LocalToWorld[3]);
+            localToWorld[1] = float4(gs_LocalToWorld[4], gs_LocalToWorld[5],
+                                     gs_LocalToWorld[6], gs_LocalToWorld[7]);
+            localToWorld[2] = float4(gs_LocalToWorld[8], gs_LocalToWorld[9],
+                                     gs_LocalToWorld[10], gs_LocalToWorld[11]);
+            localToWorld[3] = float4(gs_LocalToWorld[12], gs_LocalToWorld[13],
+                                     gs_LocalToWorld[14], gs_LocalToWorld[15]);
+
+            // Transform to world space
+            float4 worldPos = mul(float4(localPos, 1.0), localToWorld);
+            float4 clipPos  = mul(worldPos, WorldToClip);
+
+            // Translated world position for velocity
+            float3 translatedWorldPos = worldPos.xyz + PreViewTranslation;
+
+            // Cull if behind camera
+            if (clipPos.w <= 0.0)
+            {
+                WriteInvalidSplat(outputIdx, ...);
+                continue;
+            }
+
+            // View space transform, covariance, projection
+            // (same math as CalcViewData.usf ProcessSplat)
+            ...
+
+            // SH evaluation using gs_GlobalSHByteOffset
+            // localSplatIdx = globalSplatIdx - gs_GlobalSplatStartIndex
+            ...
+
+            // Cluster debug info
+            // Compute selectedClusterID and LODLevel from:
+            //   localSplatIdx = globalSplatIdx - gs_GlobalSplatStartIndex
+            //   If localSplatIdx >= gs_OriginalSplatCount -> LOD splat
+            //   Else -> read ShadowSelectedClusterBuffer[gs_GlobalSelectedClusterStart + clusterIdx]
+            ...
+
+            // Write to dense output
+            GlobalViewDataBuffer[outputIdx] = viewData;
+        }
+
+PERFORMANCE COMPARISON per visible splat:
+
+    Old GlobalCalcViewData:                   New ClusterCalcViewData:
+    -----------------------------------------------------------------------
+    Read RepackedIndex[N]        (random)     (none -- localIdx is implicit)
+    BinarySearch Metadata        (7 reads)    (none -- shared from groupshared)
+    Read Metadata[proxy]         (128B)       (none -- shared from groupshared)
+    Read RenderParams[proxy]     (32B)        (none -- shared from groupshared)
+    Read PackedSplat[random]     (random)     Read PackedSplat[sequential]
+    Math...                                   Math... (same)
+    Write ViewData[N]            (sequential) Write ViewData[N] (sequential)
+
+    Eliminated per-thread: ~10 buffer reads -> 0 buffer reads overhead
+    Memory access pattern: random -> sequential (cache-friendly)
+
+VERIFICATION (shadow mode):
+    Run ClusterCalcViewData alongside old Repack+GlobalCalcViewData.
+    Readback and compare first 100 ViewData entries: position, color, axes
+    should match within float epsilon.
+
+    Visual toggle CVar: gs.UseClusterCalcViewData 0/1
+    When enabled, swap ClusterCalcViewData output into the draw pipeline.
+    Should be pixel-identical.
+
+PASS CONDITION:
+    - ViewData output matches old path within float epsilon
+    - Visual output pixel-identical with toggle CVar
+    - GPU timing: Cluster path < 3ms (vs 7.5ms for Repack+GlobalCalcViewData)
+    - No GPU validation errors
+
+--------------------------------------------------------------------------------
+STAGE D -- Integration + Remove Old Passes                     [ ] Not Started
+--------------------------------------------------------------------------------
+
+GOAL: Wire the new cluster-based pipeline as the primary path.
+Remove CompactSplats, GatherVisibleCountsGlobal, Repack, GlobalCalcViewData.
+
+FILES TO MODIFY:
+    GaussianSplatting.cpp  (main render loop -- replace dispatch sequence)
+    GlobalSplatBufferManager.h/.cpp  (remove old dispatch functions + buffers)
+    GaussianSplatShaders.h/.cpp  (remove old shader classes)
+
+NEW RENDER LOOP (inside bAllValidNanite block):
+
+    // 1. Global Cluster Culling (unchanged)
+    RawSplatBufferManager->DispatchGlobalClusterCulling(
+        RHICmdList, *SceneView, ProcessedProxies);
+
+    // 2. Build visible cluster work list (NEW)
+    RawSplatBufferManager->DispatchBuildVisibleClusterWorkList(
+        RHICmdList, ProcessedProxies);
+
+    // 3. Cluster prefix sum + write indirect args (NEW)
+    RawSplatBufferManager->DispatchClusterPrefixSum(
+        RHICmdList, RawAccumulator, MaxRenderBudget);
+
+    // 4. Cluster-based CalcViewData (NEW -- replaces Repack+GlobalCalcViewData)
+    RawSplatBufferManager->DispatchClusterCalcViewData(
+        RHICmdList, *SceneView, RawAccumulator, MaxRenderBudget);
+
+    // 5. CalcDistances + RadixSort (unchanged -- uses same indirect args)
+    FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(
+        RHICmdList, RawAccumulator);
+    FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(
+        RHICmdList, RawAccumulator);
+
+REMOVED DISPATCHES:
+    DispatchGlobalCompactSplats          -- entirely removed
+    DispatchGatherVisibleCountsGlobal    -- entirely removed
+    DispatchRepackAndGlobalCalcViewData  -- replaced by DispatchClusterCalcViewData
+    DispatchPrefixSumVisibleCounts       -- replaced by DispatchClusterPrefixSum
+
+REMOVED BUFFERS:
+    ShadowCompactedSplatIndices + UAV
+    ShadowVisibleCountArray + UAV + SRV
+    ShadowRepackedSplatIndices + UAV + SRV
+    ProcessedToMetadataIndexBuffer + SRV
+
+REMOVED SHADERS:
+    FGlobalCompactSplatsResetCS
+    FGlobalCompactSplatsCS
+    FGatherVisibleCountsGlobalCS
+    FRepackCompactedIndicesCS
+    FGlobalCalcViewDataCS
+
+REMOVED SHADER FILES:
+    GlobalCompactSplats.usf
+    GatherVisibleCountsGlobal.usf
+    RepackCompactedIndices.usf
+    GlobalCalcViewData.usf
+
+VERIFICATION:
+    - Visual output identical to old path
+    - Profile with Unreal Insights:
+        GPU total: ~17.5ms -> ~9-10ms (target)
+        ClusterCalcViewData: ~2-3ms (vs Repack+GlobalCalcViewData 7.5ms)
+        CompactSplats: eliminated (was 1.9ms)
+    - Budget enforcement still works
+    - Camera-static skip cache still works (update cache invalidation logic)
+    - Non-Nanite fallback path unaffected
+
+PASS CONDITION:
+    - No visual regression from any camera angle
+    - GPU total < 12ms (conservative target, was 17.5ms)
+    - Stable across multiple sessions
+    - No GPU crashes or D3D12 validation errors
+
+--------------------------------------------------------------------------------
+STAGE E -- Cleanup + Metadata Bug Fix Verification             [ ] Not Started
+--------------------------------------------------------------------------------
+
+GOAL: Final cleanup, remove debug CVars, verify metadata fix.
+
+WHAT TO DO:
+    [ ] Remove gs.UseClusterCalcViewData toggle CVar
+    [ ] Remove shadow-mode validation code from Stages A-C
+    [ ] Remove old CompactSplats.usf shader file (if still present)
+    [ ] Update DispatchPlan_V2.txt status notes
+    [ ] Clean up "Shadow" prefix naming in buffers (optional, cosmetic)
+    [ ] Verify metadata ordering fix works across all test scenarios:
+        - 100 proxies, camera close -> no flashing
+        - 100 proxies, camera far -> normal rendering
+        - Moving camera -> smooth transitions, no popping
+        - Adding/removing proxies at runtime -> correct rebuild
+
+PASS CONDITION:
+    - Clean compile, no warnings
+    - All test scenarios pass
+    - Profile numbers stable and improved
+
+================================================================================
+6. PROGRESS TRACKER
+================================================================================
+
+  PREREQUISITE -- Fix Metadata Ordering Bug     [ ] Not Started
+  STAGE A -- BuildVisibleClusterWorkList        [ ] Not Started
+  STAGE B -- ClusterPrefixSum                   [ ] Not Started
+  STAGE C -- ClusterCalcViewData Shader         [ ] Not Started
+  STAGE D -- Integration + Remove Old Passes    [ ] Not Started
+  STAGE E -- Cleanup                            [ ] Not Started
+
+================================================================================
+7. RISK NOTES
+================================================================================
+
+1. VARIABLE CLUSTER SIZE
+   Leaf clusters have ~128 splats (DefaultSplatsPerCluster), but LOD parents
+   may have fewer. Thread group size of 128 means some threads idle for small
+   clusters. This is acceptable -- GPU waves (32/64 threads) handle partial
+   occupancy efficiently. For clusters > 128 splats, threads loop.
+
+2. ATOMIC ORDERING IN WORK LIST
+   BuildVisibleClusterWorkList uses atomicAdd for append. Work item order is
+   non-deterministic. This is fine -- ClusterPrefixSum processes them in whatever
+   order they appear. Final ViewData output positions are deterministic via
+   prefix sum offsets.
+
+3. GROUPSHARED MEMORY USAGE
+   Per thread group: LocalToWorld (64B) + RenderParams (~28B) + offsets/counts
+   (~40B) = ~132 bytes. Well within the 32KB groupshared limit per group.
+   No occupancy impact.
+
+4. LOD PARENT BINARY SEARCH
+   BuildVisibleClusterWorkListLODCS needs to find which proxy owns a global
+   cluster index. Options:
+   (a) Add GlobalClusterEnd to FProxyGPUMetadata -- requires keeping struct
+       at 128 bytes (repurpose a field or shrink something).
+   (b) Upload a separate CumulativeClusterEnd buffer (~400 bytes for 100
+       proxies). Simple and avoids touching the metadata struct.
+   (c) Compute GlobalClusterStartIndex + ClusterCount in the shader per proxy
+       and do linear scan. O(N) but N=100 proxies is negligible.
+   Recommendation: option (b) for simplicity.
+
+5. BUDGET ENFORCEMENT GRANULARITY
+   Budget was previously enforced per-proxy (closer proxies get priority).
+   Cluster-based budget enforces per-cluster, which is finer-grained. Behavior
+   is slightly different but strictly better -- partial proxies can render
+   instead of all-or-nothing.
+
+6. CAMERA-STATIC SKIP CACHE
+   The existing bCanSkip logic checks per-proxy cache state. This must be
+   updated to account for the new pipeline. The cache key (VP matrix + proxy
+   transforms) remains the same -- only the dispatch sequence changes.
+
+7. PREFIX SUM SCALABILITY
+   Single-thread prefix sum for ~5,000-10,000 clusters takes <10us.
+   If cluster counts grow to 100K+, consider a parallel prefix sum
+   (two-level scan). Not needed for current workloads.
+
+================================================================================
+END OF PLAN
+================================================================================

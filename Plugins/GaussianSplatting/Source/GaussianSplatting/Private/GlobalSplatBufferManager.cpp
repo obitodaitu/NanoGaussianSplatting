@@ -16,13 +16,6 @@
 
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
-static TAutoConsoleVariable<int32> CVarValidateGlobalCulling(
-	TEXT("gs.ValidateGlobalCulling"),
-	0,
-	TEXT("Stage 2: Compare per-proxy cluster culling results against global culling.\n")
-	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
-	ECVF_RenderThreadSafe);
-
 // ============================================================================
 // UpdateIfNeeded
 // ============================================================================
@@ -550,7 +543,6 @@ void FGlobalSplatBufferManager::Release()
 	ShadowLODClusterCountBufferUAV.SafeRelease();
 	ShadowLODSplatTotalBuffer.SafeRelease();
 	ShadowLODSplatTotalBufferUAV.SafeRelease();
-	ShadowValidationStagingBuffer.SafeRelease();
 	bShadowBuffersAllocated = false;
 
 	// Stage 3: Shadow compaction buffers
@@ -565,9 +557,6 @@ void FGlobalSplatBufferManager::Release()
 	ShadowRepackedSplatIndices.SafeRelease();
 	ShadowRepackedSplatIndicesUAV.SafeRelease();
 	ShadowRepackedSplatIndicesSRV.SafeRelease();
-	ShadowGlobalViewDataBuffer.SafeRelease();
-	ShadowGlobalViewDataBufferUAV.SafeRelease();
-	ShadowGlobalViewDataBufferSRV.SafeRelease();
 	ProxyRenderParamsBuffer.SafeRelease();
 	ProxyRenderParamsBufferSRV.SafeRelease();
 	AllocatedRenderParamsCount = 0;
@@ -665,7 +654,7 @@ void FGlobalSplatBufferManager::DispatchGlobalClusterCulling(
 		return;
 	}
 
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatGlobalClusterCulling_Shadow);
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatGlobalClusterCulling);
 
 	// Ensure shadow buffers exist
 	EnsureShadowBuffers(RHICmdList);
@@ -765,117 +754,17 @@ void FGlobalSplatBufferManager::DispatchGlobalClusterCulling(
 		UnsetShaderUAVs(RHICmdList, CullingShader, CullingShader.GetComputeShader());
 	}
 
-	// Transition shadow buffers to SRVCompute — ready for validation reads
+	// Transition shadow buffers to SRVCompute for downstream stages
 	RHICmdList.Transition(FRHITransitionInfo(ShadowClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ShadowSelectedClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ShadowLODClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ShadowLODSplatTotalBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-
-	// ---------------------------------------------------------------
-	// Validation: compare per-proxy visible cluster counts (old path)
-	// against shadow bitmap popcount per proxy (new path)
-	// ---------------------------------------------------------------
-	if (CVarValidateGlobalCulling.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
-	{
-		// Read back the shadow visibility bitmap to CPU
-		const uint32 BitmapBytes = TotalVisibilityBitmapUints * sizeof(uint32);
-		TArray<uint32> ShadowBitmap;
-		ShadowBitmap.SetNumZeroed(TotalVisibilityBitmapUints);
-		{
-			void* Src = RHICmdList.LockBuffer(ShadowClusterVisibilityBitmap, 0, BitmapBytes, RLM_ReadOnly);
-			FMemory::Memcpy(ShadowBitmap.GetData(), Src, BitmapBytes);
-			RHICmdList.UnlockBuffer(ShadowClusterVisibilityBitmap);
-		}
-
-		// Read back total global visible count
-		uint32 GlobalTotalVisible = 0;
-		{
-			void* Src = RHICmdList.LockBuffer(ShadowVisibleClusterCountBuffer, 0, sizeof(uint32), RLM_ReadOnly);
-			FMemory::Memcpy(&GlobalTotalVisible, Src, sizeof(uint32));
-			RHICmdList.UnlockBuffer(ShadowVisibleClusterCountBuffer);
-		}
-
-		// Build per-metadata-index bitmap offset table
-		// LastProxySet is in metadata order (same order as ProxyMetadataBuffer)
-		TArray<uint32> MetadataBitmapStarts;
-		MetadataBitmapStarts.SetNumZeroed(LastProxySet.Num());
-		{
-			uint32 CumBitmapUints = 0;
-			for (int32 m = 0; m < LastProxySet.Num(); m++)
-			{
-				MetadataBitmapStarts[m] = CumBitmapUints;
-				FGaussianSplatGPUResources* MRes = LastProxySet[m]->GetGPUResources();
-				CumBitmapUints += FMath::DivideAndRoundUp((uint32)MRes->ClusterCount, 32u);
-			}
-		}
-
-		// Per-proxy comparison
-		// ValidProxies may be in a different order than LastProxySet (metadata order)
-		// so we match each proxy by pointer identity to find the correct bitmap section
-		uint32 OldTotalVisible = 0;
-		uint32 NewTotalVisible = 0;
-		bool bAllMatch = true;
-
-		for (int32 i = 0; i < ValidProxies.Num(); i++)
-		{
-			FGaussianSplatGPUResources* Res = ValidProxies[i]->GetGPUResources();
-			if (!Res) continue;
-
-			// Find this proxy's metadata index
-			int32 MetadataIdx = LastProxySet.Find(ValidProxies[i]);
-			if (MetadataIdx == INDEX_NONE)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[GS Stage2] Proxy[%d]: not found in metadata — skipping"), i);
-				continue;
-			}
-
-			// Old path: read per-proxy VisibleClusterCountBuffer[0]
-			uint32 OldCount = 0;
-			{
-				RHICmdList.Transition(FRHITransitionInfo(Res->VisibleClusterCountBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-				void* Src = RHICmdList.LockBuffer(Res->VisibleClusterCountBuffer, 0, sizeof(uint32), RLM_ReadOnly);
-				FMemory::Memcpy(&OldCount, Src, sizeof(uint32));
-				RHICmdList.UnlockBuffer(Res->VisibleClusterCountBuffer);
-			}
-
-			// New path: popcount this proxy's section of the shadow bitmap
-			uint32 ProxyBitmapUints = FMath::DivideAndRoundUp((uint32)Res->ClusterCount, 32u);
-			uint32 BitmapStart = MetadataBitmapStarts[MetadataIdx];
-			uint32 NewCount = 0;
-			for (uint32 j = 0; j < ProxyBitmapUints && (BitmapStart + j) < (uint32)ShadowBitmap.Num(); j++)
-			{
-				NewCount += FMath::CountBits(ShadowBitmap[BitmapStart + j]);
-			}
-
-			bool bMatch = (OldCount == NewCount);
-			if (!bMatch) bAllMatch = false;
-
-			UE_LOG(LogTemp, Log,
-				TEXT("[GS Stage2] Proxy[%d] (meta=%d): old=%u visible clusters  new=%u %s"),
-				i, MetadataIdx, OldCount, NewCount, bMatch ? TEXT("MATCH") : TEXT("MISMATCH"));
-
-			OldTotalVisible += OldCount;
-			NewTotalVisible += NewCount;
-		}
-
-		UE_LOG(LogTemp, Log,
-			TEXT("[GS Stage2] Total: old=%u  new(bitmap)=%u  new(counter)=%u  %s"),
-			OldTotalVisible, NewTotalVisible, GlobalTotalVisible,
-			bAllMatch ? TEXT("All proxies MATCH") : TEXT("MISMATCH DETECTED"));
-	}
 }
 
 // ============================================================================
 // Stage 3: EnsureShadowCompactBuffers
 // ============================================================================
-
-static TAutoConsoleVariable<int32> CVarValidateGlobalCompact(
-	TEXT("gs.ValidateGlobalCompact"),
-	0,
-	TEXT("Stage 3: Compare per-proxy visible splat counts against global compact.\n")
-	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
-	ECVF_RenderThreadSafe);
 
 void FGlobalSplatBufferManager::EnsureShadowCompactBuffers(FRHICommandListImmediate& RHICmdList)
 {
@@ -928,7 +817,7 @@ void FGlobalSplatBufferManager::DispatchGlobalCompactSplats(
 		return;
 	}
 
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatGlobalCompactSplats_Shadow);
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatGlobalCompactSplats);
 
 	// Ensure shadow compact buffers exist
 	EnsureShadowCompactBuffers(RHICmdList);
@@ -1008,84 +897,14 @@ void FGlobalSplatBufferManager::DispatchGlobalCompactSplats(
 		UnsetShaderUAVs(RHICmdList, CompactShader, CompactShader.GetComputeShader());
 	}
 
-	// Transition shadow compact buffers to readable state for validation
+	// Transition shadow compact buffers to readable state for downstream stages
 	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(ShadowCompactedSplatIndices, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-
-	// ---------------------------------------------------------------
-	// Validation: compare per-proxy visible splat counts (old path)
-	// against ShadowVisibleCountArray per proxy (new path)
-	// ---------------------------------------------------------------
-	if (CVarValidateGlobalCompact.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
-	{
-		// Read back the shadow visible count array to CPU
-		const uint32 CountBytes = GetProxyCount() * sizeof(uint32);
-		TArray<uint32> ShadowCounts;
-		ShadowCounts.SetNumZeroed(GetProxyCount());
-		{
-			void* Src = RHICmdList.LockBuffer(ShadowVisibleCountArray, 0, CountBytes, RLM_ReadOnly);
-			FMemory::Memcpy(ShadowCounts.GetData(), Src, CountBytes);
-			RHICmdList.UnlockBuffer(ShadowVisibleCountArray);
-		}
-
-		// Per-proxy comparison
-		bool bAllMatch = true;
-		uint32 OldTotal = 0;
-		uint32 NewTotal = 0;
-
-		for (int32 i = 0; i < ValidProxies.Num(); i++)
-		{
-			FGaussianSplatGPUResources* Res = ValidProxies[i]->GetGPUResources();
-			if (!Res) continue;
-
-			// Find this proxy's metadata index
-			int32 MetadataIdx = LastProxySet.Find(ValidProxies[i]);
-			if (MetadataIdx == INDEX_NONE)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[GS Stage3] Proxy[%d]: not found in metadata -- skipping"), i);
-				continue;
-			}
-
-			// Old path: read per-proxy VisibleSplatCountBuffer[0]
-			uint32 OldCount = 0;
-			{
-				RHICmdList.Transition(FRHITransitionInfo(Res->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-				void* Src = RHICmdList.LockBuffer(Res->VisibleSplatCountBuffer, 0, sizeof(uint32), RLM_ReadOnly);
-				FMemory::Memcpy(&OldCount, Src, sizeof(uint32));
-				RHICmdList.UnlockBuffer(Res->VisibleSplatCountBuffer);
-			}
-
-			// New path: read from ShadowVisibleCountArray
-			uint32 NewCount = ((uint32)MetadataIdx < GetProxyCount()) ? ShadowCounts[MetadataIdx] : 0;
-
-			bool bMatch = (OldCount == NewCount);
-			if (!bMatch) bAllMatch = false;
-
-			UE_LOG(LogTemp, Log,
-				TEXT("[GS Stage3] Proxy[%d] (meta=%d): old=%u visible splats  new=%u %s"),
-				i, MetadataIdx, OldCount, NewCount, bMatch ? TEXT("MATCH") : TEXT("MISMATCH"));
-
-			OldTotal += OldCount;
-			NewTotal += NewCount;
-		}
-
-		UE_LOG(LogTemp, Log,
-			TEXT("[GS Stage3] Total: old=%u  new=%u  %s"),
-			OldTotal, NewTotal,
-			bAllMatch ? TEXT("All proxies MATCH") : TEXT("MISMATCH DETECTED"));
-	}
 }
 
 // ============================================================================
 // Stage 4: EnsureShadowViewDataBuffers
 // ============================================================================
-
-static TAutoConsoleVariable<int32> CVarValidateGlobalViewData(
-	TEXT("gs.ValidateGlobalViewData"),
-	0,
-	TEXT("Stage 4: Compare global CalcViewData output against per-proxy path.\n")
-	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
-	ECVF_RenderThreadSafe);
 
 void FGlobalSplatBufferManager::EnsureShadowViewDataBuffers(FRHICommandListImmediate& RHICmdList)
 {
@@ -1106,20 +925,10 @@ void FGlobalSplatBufferManager::EnsureShadowViewDataBuffers(FRHICommandListImmed
 		ShadowRepackedSplatIndices,
 		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(UintStride));
 
-	// Shadow ViewData buffer: one FGaussianSplatViewData per visible splat (worst case)
-	const uint32 ViewDataStride = sizeof(FGaussianSplatViewData);
-	ShadowGlobalViewDataBuffer = CreateStructuredBuffer(RHICmdList, TEXT("ShadowGlobalViewDataBuffer"), ViewDataStride, MaxSplats);
-	ShadowGlobalViewDataBufferUAV = RHICmdList.CreateUnorderedAccessView(
-		ShadowGlobalViewDataBuffer,
-		FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(ViewDataStride));
-	ShadowGlobalViewDataBufferSRV = RHICmdList.CreateShaderResourceView(
-		ShadowGlobalViewDataBuffer,
-		FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetStride(ViewDataStride));
-
 	bShadowViewDataBuffersAllocated = true;
 
-	UE_LOG(LogTemp, Log, TEXT("[GS Stage4] Shadow ViewData buffers allocated: MaxSplats=%u ViewDataStride=%u"),
-		MaxSplats, ViewDataStride);
+	UE_LOG(LogTemp, Log, TEXT("[GS Stage4] Shadow ViewData buffers allocated: MaxSplats=%u"),
+		MaxSplats);
 }
 
 // ============================================================================
@@ -1296,8 +1105,7 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 	const FSceneView& View,
 	const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	uint32 MaxRenderBudget,
-	bool bWriteToRealBuffer)
+	uint32 MaxRenderBudget)
 {
 	if (!IsReady() || TotalSplatCount == 0 || GetProxyCount() == 0)
 	{
@@ -1316,7 +1124,7 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		return;
 	}
 
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatStage4_RepackAndGlobalCalcViewData_Shadow);
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatStage4_RepackAndGlobalCalcViewData);
 
 	// Ensure Stage 4 shadow buffers exist
 	EnsureShadowViewDataBuffers(RHICmdList);
@@ -1419,14 +1227,8 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		RHICmdList.Transition(FRHITransitionInfo(ProxyRenderParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 		RHICmdList.Transition(FRHITransitionInfo(ShadowSelectedClusterBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 
-		// Transition output — use real buffer when bWriteToRealBuffer, shadow buffer otherwise
-		FBufferRHIRef& ViewDataOutputBuffer = bWriteToRealBuffer
-			? GlobalAccumulator->GlobalViewDataBuffer
-			: ShadowGlobalViewDataBuffer;
-		FUnorderedAccessViewRHIRef& ViewDataOutputUAV = bWriteToRealBuffer
-			? GlobalAccumulator->GlobalViewDataBufferUAV
-			: ShadowGlobalViewDataBufferUAV;
-		RHICmdList.Transition(FRHITransitionInfo(ViewDataOutputBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		// Transition output — always write to the real GlobalViewDataBuffer
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 		// Create SRV for ShadowSelectedClusterBuffer (read-only in this stage)
 		FShaderResourceViewRHIRef ShadowSelectedClusterBufferSRV = RHICmdList.CreateShaderResourceView(
@@ -1447,7 +1249,7 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		CalcParams.ShadowSelectedClusterBuffer = ShadowSelectedClusterBufferSRV;
 		CalcParams.ShadowRepackedSplatIndices = ShadowRepackedSplatIndicesSRV;
 		CalcParams.GlobalBaseOffsetsBuffer = GlobalAccumulator->GlobalBaseOffsetsBufferSRV;
-		CalcParams.ShadowGlobalViewDataBuffer = ViewDataOutputUAV;
+		CalcParams.ShadowGlobalViewDataBuffer = GlobalAccumulator->GlobalViewDataBufferUAV;
 		CalcParams.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 		CalcParams.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 		CalcParams.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
@@ -1469,180 +1271,6 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		UnsetShaderUAVs(RHICmdList, CalcViewDataShader, CalcViewDataShader.GetComputeShader());
 	}
 
-	// Transition output ViewData buffer to readable state
-	if (bWriteToRealBuffer)
-	{
-		// Real buffer: transition for downstream CalcDistances/RadixSort consumption
-		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-	}
-	else
-	{
-		// Shadow buffer: transition for validation readback
-		RHICmdList.Transition(FRHITransitionInfo(ShadowGlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-	}
-
-	// ---------------------------------------------------------------
-	// Validation: compare ALL visible ViewData entries as sorted sets
-	// Only read TotalVisible entries (not stale data from prior frames)
-	// Skip validation when writing to the real buffer (Stage 5 production path)
-	// ---------------------------------------------------------------
-	if (!bWriteToRealBuffer && CVarValidateGlobalViewData.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
-	{
-		// Compute TotalVisible by summing ShadowVisibleCountArray for processed proxies
-		// (same counts validated in Stage 3, so this is reliable)
-		uint32 TotalVisibleComputed = 0;
-		{
-			const uint32 MetaProxyCount = GetProxyCount();
-			TArray<uint32> ShadowCounts;
-			ShadowCounts.SetNumZeroed(MetaProxyCount);
-			RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-			void* Src = RHICmdList.LockBuffer(ShadowVisibleCountArray, 0, MetaProxyCount * sizeof(uint32), RLM_ReadOnly);
-			FMemory::Memcpy(ShadowCounts.GetData(), Src, MetaProxyCount * sizeof(uint32));
-			RHICmdList.UnlockBuffer(ShadowVisibleCountArray);
-
-			// Sum counts for processed proxies only (using the mapping)
-			for (uint32 i = 0; i < NumProcessed; i++)
-			{
-				int32 MetaIdx = LastProxySet.Find(ValidProxies[i]);
-				if (MetaIdx != INDEX_NONE && (uint32)MetaIdx < MetaProxyCount)
-				{
-					TotalVisibleComputed += ShadowCounts[MetaIdx];
-				}
-			}
-
-			// Apply budget cap (same as PrefixSum does)
-			if (MaxRenderBudget > 0 && TotalVisibleComputed > MaxRenderBudget)
-			{
-				TotalVisibleComputed = MaxRenderBudget;
-			}
-		}
-
-		if (TotalVisibleComputed == 0)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[GS Stage4] TotalVisible=0, skipping validation"));
-		}
-		else
-		{
-		const uint32 ReadCount = TotalVisibleComputed;
-		const uint32 ReadBytes = ReadCount * sizeof(FGaussianSplatViewData);
-
-		TArray<FGaussianSplatViewData> NewAll;
-		NewAll.SetNumZeroed(ReadCount);
-		{
-			void* Src = RHICmdList.LockBuffer(ShadowGlobalViewDataBuffer, 0, ReadBytes, RLM_ReadOnly);
-			FMemory::Memcpy(NewAll.GetData(), Src, ReadBytes);
-			RHICmdList.UnlockBuffer(ShadowGlobalViewDataBuffer);
-		}
-
-		TArray<FGaussianSplatViewData> OldAll;
-		OldAll.SetNumZeroed(ReadCount);
-		{
-			RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-			void* Src = RHICmdList.LockBuffer(GlobalAccumulator->GlobalViewDataBuffer, 0, ReadBytes, RLM_ReadOnly);
-			FMemory::Memcpy(OldAll.GetData(), Src, ReadBytes);
-			RHICmdList.UnlockBuffer(GlobalAccumulator->GlobalViewDataBuffer);
-		}
-
-		// Filter to valid entries only (ClipPosition.W > 0)
-		TArray<FGaussianSplatViewData> OldValid, NewValid;
-		OldValid.Reserve(ReadCount);
-		NewValid.Reserve(ReadCount);
-
-		for (uint32 i = 0; i < ReadCount; i++)
-		{
-			if (OldAll[i].ClipPosition.W > 0.0f) OldValid.Add(OldAll[i]);
-			if (NewAll[i].ClipPosition.W > 0.0f) NewValid.Add(NewAll[i]);
-		}
-
-		UE_LOG(LogTemp, Log,
-			TEXT("[GS Stage4] Full readback: Read=%u OldValid=%d NewValid=%d"),
-			ReadCount, OldValid.Num(), NewValid.Num());
-
-		// Sort both valid arrays by TranslatedWorldPos (X, then Y, then Z)
-		auto SortByWorldPos = [](const FGaussianSplatViewData& A, const FGaussianSplatViewData& B)
-		{
-			if (A.TranslatedWorldPos.X != B.TranslatedWorldPos.X) return A.TranslatedWorldPos.X < B.TranslatedWorldPos.X;
-			if (A.TranslatedWorldPos.Y != B.TranslatedWorldPos.Y) return A.TranslatedWorldPos.Y < B.TranslatedWorldPos.Y;
-			return A.TranslatedWorldPos.Z < B.TranslatedWorldPos.Z;
-		};
-
-		OldValid.Sort(SortByWorldPos);
-		NewValid.Sort(SortByWorldPos);
-
-		// Compare sorted valid arrays
-		uint32 CompareCount = FMath::Min(OldValid.Num(), NewValid.Num());
-		uint32 NumWorldMatch = 0;
-		uint32 NumClipMatch = 0;
-		float MaxWorldDelta = 0.0f;
-		float MaxClipDelta = 0.0f;
-
-		for (uint32 i = 0; i < (uint32)CompareCount; i++)
-		{
-			const FGaussianSplatViewData& O = OldValid[i];
-			const FGaussianSplatViewData& N = NewValid[i];
-
-			// World position delta
-			float wdx = FMath::Abs(O.TranslatedWorldPos.X - N.TranslatedWorldPos.X);
-			float wdy = FMath::Abs(O.TranslatedWorldPos.Y - N.TranslatedWorldPos.Y);
-			float wdz = FMath::Abs(O.TranslatedWorldPos.Z - N.TranslatedWorldPos.Z);
-			float worldDelta = FMath::Max(FMath::Max(wdx, wdy), wdz);
-			MaxWorldDelta = FMath::Max(MaxWorldDelta, worldDelta);
-			if (worldDelta < 0.01f) NumWorldMatch++;
-
-			// Clip position delta
-			float cdx = FMath::Abs(O.ClipPosition.X - N.ClipPosition.X);
-			float cdy = FMath::Abs(O.ClipPosition.Y - N.ClipPosition.Y);
-			float cdz = FMath::Abs(O.ClipPosition.Z - N.ClipPosition.Z);
-			float cdw = FMath::Abs(O.ClipPosition.W - N.ClipPosition.W);
-			float clipDelta = FMath::Max(FMath::Max(cdx, cdy), FMath::Max(cdz, cdw));
-			MaxClipDelta = FMath::Max(MaxClipDelta, clipDelta);
-			if (clipDelta < 0.01f) NumClipMatch++;
-		}
-
-		UE_LOG(LogTemp, Log,
-			TEXT("[GS Stage4] Sorted full set: WorldMatch=%u/%u ClipMatch=%u/%u"),
-			NumWorldMatch, CompareCount, NumClipMatch, CompareCount);
-		UE_LOG(LogTemp, Log,
-			TEXT("[GS Stage4] MaxDelta: world=%f clip=%f"),
-			MaxWorldDelta, MaxClipDelta);
-
-		// Log first few sorted mismatches for inspection
-		uint32 MismatchLogged = 0;
-		for (uint32 i = 0; i < (uint32)CompareCount && MismatchLogged < 3; i++)
-		{
-			const FGaussianSplatViewData& O = OldValid[i];
-			const FGaussianSplatViewData& N = NewValid[i];
-
-			float wdx = FMath::Abs(O.TranslatedWorldPos.X - N.TranslatedWorldPos.X);
-			float wdy = FMath::Abs(O.TranslatedWorldPos.Y - N.TranslatedWorldPos.Y);
-			float wdz = FMath::Abs(O.TranslatedWorldPos.Z - N.TranslatedWorldPos.Z);
-			float worldDelta = FMath::Max(FMath::Max(wdx, wdy), wdz);
-
-			if (worldDelta >= 0.01f)
-			{
-				UE_LOG(LogTemp, Log,
-					TEXT("[GS Stage4] SortedMismatch[%u]: oldWorld=(%f,%f,%f) newWorld=(%f,%f,%f) delta=%f oldCluster=%u newCluster=%u"),
-					i,
-					O.TranslatedWorldPos.X, O.TranslatedWorldPos.Y, O.TranslatedWorldPos.Z,
-					N.TranslatedWorldPos.X, N.TranslatedWorldPos.Y, N.TranslatedWorldPos.Z,
-					worldDelta, O.ClusterID, N.ClusterID);
-				MismatchLogged++;
-			}
-		}
-
-		if (OldValid.Num() == NewValid.Num() && NumWorldMatch == (uint32)CompareCount)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[GS Stage4] PASS — same splat set (%d valid entries, world positions match)"), OldValid.Num());
-		}
-		else if (OldValid.Num() != NewValid.Num())
-		{
-			UE_LOG(LogTemp, Log, TEXT("[GS Stage4] FAIL — different valid counts: old=%d new=%d"), OldValid.Num(), NewValid.Num());
-		}
-		else
-		{
-			UE_LOG(LogTemp, Log, TEXT("[GS Stage4] FAIL — same count (%d) but %u/%u world positions differ"),
-				OldValid.Num(), CompareCount - NumWorldMatch, CompareCount);
-		}
-		} // else (TotalVisibleComputed > 0)
-	} // if CVarValidateGlobalViewData
+	// Transition output ViewData buffer for downstream CalcDistances/RadixSort consumption
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 }

@@ -63,9 +63,8 @@ static_assert(sizeof(FProxyGPUMetadata) == 128, "FProxyGPUMetadata must be 128 b
  *   concatenation (GlobalPackedSplatBuffer, GlobalClusterBuffer,
  *   GlobalSplatClusterIndexBuffer). No rendering changes.
  *
- * Stage 2: Shadow bitmaps for global cluster culling validation.
- *   DispatchGlobalClusterCulling runs after per-proxy culling and writes
- *   to shadow buffers. ValidateGlobalCulling compares results.
+ * Stage 2: Global cluster culling using shadow bitmaps.
+ *   DispatchGlobalClusterCulling runs and writes to shadow buffers.
  *
  * Owned by FGaussianSplattingModule (render-thread lifetime), like FGaussianGlobalAccumulator.
  */
@@ -96,7 +95,7 @@ struct FGlobalSplatBufferManager
 	FShaderResourceViewRHIRef ProxyMetadataBufferSRV;
 
 	//------------------------------------------------------------------------
-	// Stage 2: Shadow bitmaps (global cluster culling validation)
+	// Stage 2: Shadow bitmaps (global cluster culling)
 	//------------------------------------------------------------------------
 
 	/** Shadow visibility bitmap — 1 bit per cluster, concatenated across proxies. */
@@ -127,13 +126,10 @@ struct FGlobalSplatBufferManager
 	FBufferRHIRef ShadowLODSplatTotalBuffer;
 	FUnorderedAccessViewRHIRef ShadowLODSplatTotalBufferUAV;
 
-	/** Staging buffer for GPU readback of shadow visible cluster count. */
-	FBufferRHIRef ShadowValidationStagingBuffer;
-
 	bool bShadowBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
-	// Stage 3: Shadow compaction buffers (global compact splats validation)
+	// Stage 3: Shadow compaction buffers (global compact splats)
 	//------------------------------------------------------------------------
 
 	/** Shadow compacted splat indices — worst case TotalSplatCount entries. */
@@ -148,18 +144,13 @@ struct FGlobalSplatBufferManager
 	bool bShadowCompactBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
-	// Stage 4: Shadow ViewData buffers (Repack + GlobalCalcViewData validation)
+	// Stage 4: Shadow ViewData buffers (Repack + GlobalCalcViewData)
 	//------------------------------------------------------------------------
 
 	/** Shadow repacked splat indices — dense contiguous layout (TotalSplatCount worst case). */
 	FBufferRHIRef ShadowRepackedSplatIndices;
 	FUnorderedAccessViewRHIRef ShadowRepackedSplatIndicesUAV;
 	FShaderResourceViewRHIRef ShadowRepackedSplatIndicesSRV;
-
-	/** Shadow global view data buffer — one FGaussianSplatViewData per visible splat. */
-	FBufferRHIRef ShadowGlobalViewDataBuffer;
-	FUnorderedAccessViewRHIRef ShadowGlobalViewDataBufferUAV;
-	FShaderResourceViewRHIRef ShadowGlobalViewDataBufferSRV;
 
 	/** Per-proxy render parameters (OpacityScale, SplatScale, SH settings). */
 	FBufferRHIRef ProxyRenderParamsBuffer;
@@ -220,19 +211,18 @@ struct FGlobalSplatBufferManager
 	void Release();
 
 	//------------------------------------------------------------------------
-	// Stage 2: Global Cluster Culling (shadow mode)
+	// Stage 2: Global Cluster Culling
 	//------------------------------------------------------------------------
 
 	/**
-	 * Allocate shadow bitmaps and counters for global culling validation.
+	 * Allocate shadow bitmaps and counters for global culling.
 	 * Called lazily on first dispatch. Resized when totals change.
 	 */
 	void EnsureShadowBuffers(FRHICommandListImmediate& RHICmdList);
 
 	/**
-	 * Dispatch the global cluster culling shader (shadow mode).
-	 * Called AFTER per-proxy culling so both results exist for comparison.
-	 * ValidProxies is needed for readback validation (comparing per-proxy counts).
+	 * Dispatch the global cluster culling shader.
+	 * Writes results to shadow culling buffers.
 	 */
 	void DispatchGlobalClusterCulling(
 		FRHICommandListImmediate& RHICmdList,
@@ -240,7 +230,7 @@ struct FGlobalSplatBufferManager
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	//------------------------------------------------------------------------
-	// Stage 3: Global Compact Splats (shadow mode)
+	// Stage 3: Global Compact Splats
 	//------------------------------------------------------------------------
 
 	/**
@@ -250,8 +240,7 @@ struct FGlobalSplatBufferManager
 	void EnsureShadowCompactBuffers(FRHICommandListImmediate& RHICmdList);
 
 	/**
-	 * Dispatch the global compact splats shader (shadow mode).
-	 * Called AFTER per-proxy compaction so both results exist for comparison.
+	 * Dispatch the global compact splats shader.
 	 * Uses shadow bitmaps from Stage 2 (DispatchGlobalClusterCulling must run first).
 	 */
 	void DispatchGlobalCompactSplats(
@@ -259,11 +248,11 @@ struct FGlobalSplatBufferManager
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	//------------------------------------------------------------------------
-	// Stage 4: Repack + Global CalcViewData (shadow mode)
+	// Stage 4: Repack + Global CalcViewData
 	//------------------------------------------------------------------------
 
 	/**
-	 * Allocate shadow ViewData buffers for Stage 4 validation.
+	 * Allocate shadow ViewData buffers for Stage 4.
 	 * Called lazily on first dispatch. Resized when totals change.
 	 */
 	void EnsureShadowViewDataBuffers(FRHICommandListImmediate& RHICmdList);
@@ -281,18 +270,13 @@ struct FGlobalSplatBufferManager
 	 * Called AFTER PrefixSum so GlobalBaseOffsetsBuffer is available.
 	 * Uses ShadowCompactedSplatIndices from Stage 3 as input.
 	 * Reuses GlobalAccumulator's prefix sum results (validated in Stage 3).
-	 *
-	 * @param bWriteToRealBuffer  When true (Stage 5 global path), writes CalcViewData
-	 *   to GlobalAccumulator->GlobalViewDataBuffer instead of ShadowGlobalViewDataBuffer,
-	 *   and skips the validation readback.
 	 */
 	void DispatchRepackAndGlobalCalcViewData(
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget,
-		bool bWriteToRealBuffer = false);
+		uint32 MaxRenderBudget);
 
 	//------------------------------------------------------------------------
 	// Stage 5: Gather Visible Counts Global (reorder shadow → processed order)
