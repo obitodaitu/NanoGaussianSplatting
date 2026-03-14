@@ -421,40 +421,39 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							ProcessedProxies.Add(ValidProxies[pi].Proxy);
 						}
 
-						static TAutoConsoleVariable<int32> CVarUseClusterCalcViewData(
-							TEXT("gs.UseClusterCalcViewData"), 0,
-							TEXT("0=old pipeline (CompactSplats+Repack+GlobalCalcViewData), 1=cluster-based pipeline"));
-						int32 UseCluster = CVarUseClusterCalcViewData.GetValueOnRenderThread();
-
-						// 1. Global Cluster Culling (always, both paths need it)
+						// 1. Global Cluster Culling (single dispatch for all proxies)
 						RawSplatBufferManager->DispatchGlobalClusterCulling(
 							RHICmdList, *SceneView, ProcessedProxies);
 
-						if (UseCluster)
-						{
-							// NEW CLUSTER-BASED PATH
-							RawSplatBufferManager->DispatchBuildVisibleClusterWorkList(
-								RHICmdList, ProcessedProxies);
-							RawSplatBufferManager->UploadProxyRenderParams(
-								RHICmdList, ProcessedProxies);
-							RawSplatBufferManager->DispatchClusterPrefixSum(
-								RHICmdList, RawAccumulator, MaxRenderBudget, /*bWriteRealIndirectArgs=*/ true);
-							RawSplatBufferManager->DispatchClusterCalcViewData(
-								RHICmdList, *SceneView, RawAccumulator, MaxRenderBudget, /*bWriteRealViewData=*/ true);
-						}
-						else
-						{
-							// OLD PATH
-							RawSplatBufferManager->DispatchGlobalCompactSplats(
-								RHICmdList, ProcessedProxies);
-							RawSplatBufferManager->DispatchGatherVisibleCountsGlobal(
-								RHICmdList, ProcessedProxies, RawAccumulator);
-							FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
-								RHICmdList, RawAccumulator, NumProcessedProxies, MaxRenderBudget);
-							RawSplatBufferManager->DispatchRepackAndGlobalCalcViewData(
-								RHICmdList, *SceneView, ProcessedProxies,
-								RawAccumulator, MaxRenderBudget);
-						}
+						// 2. Global Compact Splats (single dispatch for all proxies)
+						RawSplatBufferManager->DispatchGlobalCompactSplats(
+							RHICmdList, ProcessedProxies);
+
+						// [NEW] Build visible cluster work list (parallel test, old path continues)
+						RawSplatBufferManager->DispatchBuildVisibleClusterWorkList(
+							RHICmdList, ProcessedProxies);
+
+						// [NEW] Cluster prefix sum (parallel test, old path continues)
+						RawSplatBufferManager->DispatchClusterPrefixSum(
+							RHICmdList, RawAccumulator, MaxRenderBudget);
+
+						// 3. Gather visible counts: reorder counts → GlobalVisibleCountArray
+						RawSplatBufferManager->DispatchGatherVisibleCountsGlobal(
+							RHICmdList, ProcessedProxies, RawAccumulator);
+
+						// 4. PrefixSum (reads GlobalVisibleCountArray, writes indirect args)
+						FGaussianSplatRenderer::DispatchPrefixSumVisibleCounts(
+							RHICmdList, RawAccumulator, NumProcessedProxies, MaxRenderBudget);
+
+						// 5. Repack + GlobalCalcViewData → GlobalViewDataBuffer
+						RawSplatBufferManager->DispatchRepackAndGlobalCalcViewData(
+							RHICmdList, *SceneView, ProcessedProxies,
+							RawAccumulator, MaxRenderBudget);
+
+						// [NEW] Cluster CalcViewData (parallel test, old path continues)
+						// Must run after step 5 which uploads ProxyRenderParams.
+						RawSplatBufferManager->DispatchClusterCalcViewData(
+							RHICmdList, *SceneView, RawAccumulator, MaxRenderBudget);
 
 						// 6. CalcDistances + RadixSort (indirect, GPU-driven counts)
 						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);

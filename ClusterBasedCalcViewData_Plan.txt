@@ -624,7 +624,7 @@ PASS CONDITION:
   STAGE A -- BuildVisibleClusterWorkList        [x] Complete
   STAGE B -- ClusterPrefixSum                   [x] Complete
   STAGE C -- ClusterCalcViewData Shader         [x] Complete
-  STAGE D -- Integration + Remove Old Passes    [x] Complete
+  STAGE D -- Integration + Remove Old Passes    [ ] Not Started
   STAGE E -- Cleanup                            [ ] Not Started
 
 ================================================================================
