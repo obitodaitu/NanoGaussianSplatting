@@ -198,6 +198,25 @@ struct FGlobalSplatBufferManager
 	FUnorderedAccessViewRHIRef ClusterSplatCountsBufferUAV;
 	FShaderResourceViewRHIRef ClusterSplatCountsBufferSRV;
 
+	/** Prefix sum of ClusterSplatCounts. Size: TotalClusterCount + 1. */
+	FBufferRHIRef ClusterOutputOffsetsBuffer;
+	FUnorderedAccessViewRHIRef ClusterOutputOffsetsBufferUAV;
+	FShaderResourceViewRHIRef ClusterOutputOffsetsBufferSRV;
+
+	/** Indirect dispatch args for ClusterCalcViewData. 3 uint32s. */
+	FBufferRHIRef ClusterCalcViewDataIndirectArgs;
+	FUnorderedAccessViewRHIRef ClusterCalcViewDataIndirectArgsUAV;
+
+	/** Test indirect args buffers (Stage 2 validation only, not used by real pipeline). */
+	FBufferRHIRef TestCalcDistIndirectArgs;
+	FUnorderedAccessViewRHIRef TestCalcDistIndirectArgsUAV;
+	FBufferRHIRef TestSortIndirectArgs;
+	FUnorderedAccessViewRHIRef TestSortIndirectArgsUAV;
+	FBufferRHIRef TestSortParams;
+	FUnorderedAccessViewRHIRef TestSortParamsUAV;
+	FBufferRHIRef TestDrawIndirectArgs;
+	FUnorderedAccessViewRHIRef TestDrawIndirectArgsUAV;
+
 	bool bClusterWorkListBuffersAllocated = false;
 
 	/** GPU readback objects for cluster work list test (multi-frame). */
@@ -208,6 +227,12 @@ struct FGlobalSplatBufferManager
 	uint32 ClusterTest_MaxReadbackClusters = 0;
 	uint32 ClusterTest_ProxyCount = 0;
 	bool bClusterTestWaitingForReadback = false;
+
+	/** GPU readback objects for cluster prefix sum test (multi-frame). */
+	TUniquePtr<FRHIGPUBufferReadback> PrefixTest_NewTotalReadback;
+	TUniquePtr<FRHIGPUBufferReadback> PrefixTest_OldDrawArgsReadback;
+	TUniquePtr<FRHIGPUBufferReadback> PrefixTest_NewDrawArgsReadback;
+	bool bPrefixTestWaitingForReadback = false;
 
 	//------------------------------------------------------------------------
 	// Global SH buffer (static, concatenated raw bytes from all proxies)
@@ -357,6 +382,17 @@ struct FGlobalSplatBufferManager
 	void DispatchBuildVisibleClusterWorkList(
 		FRHICommandListImmediate& RHICmdList,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
+
+	/**
+	 * Dispatch ClusterPrefixSum shader.
+	 * Computes prefix sum of ClusterSplatCounts → ClusterOutputOffsets.
+	 * Writes indirect args for ClusterCalcViewData.
+	 * Runs IN PARALLEL with old PrefixSum (test buffers only).
+	 */
+	void DispatchClusterPrefixSum(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		uint32 MaxRenderBudget);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

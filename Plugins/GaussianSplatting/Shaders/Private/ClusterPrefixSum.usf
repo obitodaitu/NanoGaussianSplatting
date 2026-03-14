@@ -1,0 +1,88 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Compute prefix sum of per-cluster splat counts to determine dense
+// output offsets for ClusterCalcViewData. Also writes indirect dispatch/draw args.
+// Single-thread dispatch (1,1,1) — ~5,000-10,000 clusters takes <10us.
+
+#include "/Engine/Public/Platform.ush"
+
+// Input: from BuildVisibleClusterWorkList
+StructuredBuffer<uint> ClusterSplatCountsBuffer;
+StructuredBuffer<uint> VisibleClusterCountBuffer;
+
+// Output: prefix sum offsets
+RWStructuredBuffer<uint> ClusterOutputOffsetsBuffer;
+
+// Output: indirect dispatch args for ClusterCalcViewData (one group per visible cluster)
+RWStructuredBuffer<uint> ClusterCalcViewDataIndirectArgs;
+
+// Output: test indirect args (written to separate buffers so old pipeline is unaffected)
+RWStructuredBuffer<uint> TestCalcDistIndirectArgs;
+RWStructuredBuffer<uint> TestSortIndirectArgs;
+RWStructuredBuffer<uint> TestSortParams;
+RWStructuredBuffer<uint> TestDrawIndirectArgs;
+
+uint MaxRenderBudget;
+
+[numthreads(1, 1, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+	uint visibleCount = VisibleClusterCountBuffer[0];
+	uint offset = 0;
+
+	for (uint i = 0; i < visibleCount; i++)
+	{
+		ClusterOutputOffsetsBuffer[i] = offset;
+		uint splatCount = ClusterSplatCountsBuffer[i];
+
+		// Budget enforcement per-cluster
+		if (MaxRenderBudget > 0 && (offset + splatCount) > MaxRenderBudget)
+		{
+			splatCount = (offset < MaxRenderBudget) ? (MaxRenderBudget - offset) : 0;
+		}
+
+		offset += splatCount;
+
+		if (MaxRenderBudget > 0 && offset >= MaxRenderBudget)
+		{
+			// Zero out remaining clusters
+			for (uint j = i + 1; j < visibleCount; j++)
+			{
+				ClusterOutputOffsetsBuffer[j] = offset;
+			}
+			break;
+		}
+	}
+
+	// Sentinel: TotalVisible
+	ClusterOutputOffsetsBuffer[visibleCount] = offset;
+
+	// ClusterCalcViewData indirect args (one group per visible cluster)
+	ClusterCalcViewDataIndirectArgs[0] = visibleCount;
+	ClusterCalcViewDataIndirectArgs[1] = 1;
+	ClusterCalcViewDataIndirectArgs[2] = 1;
+
+	// Guard against zero dispatch
+	uint numGroups256  = max((offset + 255u)  / 256u,  1u);
+	uint numTiles1024  = max((offset + 1023u) / 1024u, 1u);
+
+	// CalcDistances: 256 threads per group
+	TestCalcDistIndirectArgs[0] = numGroups256;
+	TestCalcDistIndirectArgs[1] = 1;
+	TestCalcDistIndirectArgs[2] = 1;
+
+	// RadixSort: 1024 threads per tile
+	TestSortIndirectArgs[0] = numTiles1024;
+	TestSortIndirectArgs[1] = 1;
+	TestSortIndirectArgs[2] = 1;
+
+	TestSortParams[0] = offset;
+	TestSortParams[1] = numTiles1024;
+
+	// DrawIndexedIndirect: { 6, InstanceCount, 0, 0, 0 }
+	TestDrawIndirectArgs[0] = 6;
+	TestDrawIndirectArgs[1] = offset;
+	TestDrawIndirectArgs[2] = 0;
+	TestDrawIndirectArgs[3] = 0;
+	TestDrawIndirectArgs[4] = 0;
+}

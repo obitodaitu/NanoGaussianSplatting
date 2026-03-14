@@ -726,6 +726,38 @@ class FBuildVisibleClusterWorkListLODCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
+// Cluster Prefix Sum (cluster-based CalcViewData pipeline)
+//----------------------------------------------------------------------
+
+/**
+ * ClusterPrefixSumCS: 1 thread total.
+ * Computes prefix sum of ClusterSplatCounts → ClusterOutputOffsets.
+ * Writes indirect dispatch args for ClusterCalcViewData and test indirect args.
+ */
+class FClusterPrefixSumCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FClusterPrefixSumCS);
+	SHADER_USE_PARAMETER_STRUCT(FClusterPrefixSumCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterSplatCountsBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, VisibleClusterCountBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterOutputOffsetsBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterCalcViewDataIndirectArgs)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, TestCalcDistIndirectArgs)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, TestSortIndirectArgs)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, TestSortParams)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, TestDrawIndirectArgs)
+		SHADER_PARAMETER(uint32, MaxRenderBudget)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+//----------------------------------------------------------------------
 // Compaction prefix-sum shaders
 //----------------------------------------------------------------------
 

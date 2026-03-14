@@ -478,7 +478,7 @@ Add to Release():
 ================================================================================
 STAGE 2 -- ClusterPrefixSum + WriteIndirectArgs
 ================================================================================
-Status: [ ] Not started
+Status: [x] Complete
 
 GOAL:
   Compute prefix sum of ClusterSplatCounts to get dense output offsets.
