@@ -64,8 +64,13 @@ bool FGlobalSplatBufferManager::UpdateIfNeeded(
 		bStaticBuffersBuilt = true;
 	}
 
-	// Always upload metadata — transforms update every frame for moving objects
-	UploadProxyMetadata(RHICmdList, ValidProxies, bChanged);
+	// Always upload metadata — transforms update every frame for moving objects.
+	// Must use LastProxySet (rebuild-time order), NOT the distance-sorted ValidProxies,
+	// because GlobalPackedSplatBuffer was concatenated in LastProxySet order.
+	// Using ValidProxies here causes cumulative offsets to mismatch the buffer layout
+	// when camera movement changes the distance sort order, resulting in wrong transforms
+	// applied to splats (flashing/disappearing assets).
+	UploadProxyMetadata(RHICmdList, LastProxySet, bChanged);
 
 	return bChanged;
 }
