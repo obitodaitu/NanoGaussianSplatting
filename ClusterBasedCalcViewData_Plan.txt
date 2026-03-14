@@ -623,7 +623,7 @@ PASS CONDITION:
   PREREQUISITE -- Fix Metadata Ordering Bug     [x] Fixed
   STAGE A -- BuildVisibleClusterWorkList        [x] Complete
   STAGE B -- ClusterPrefixSum                   [x] Complete
-  STAGE C -- ClusterCalcViewData Shader         [x] Complete
+  STAGE C -- ClusterCalcViewData Shader         [ ] Not Started
   STAGE D -- Integration + Remove Old Passes    [ ] Not Started
   STAGE E -- Cleanup                            [ ] Not Started
 

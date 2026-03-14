@@ -726,45 +726,6 @@ class FBuildVisibleClusterWorkListLODCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
-// Cluster CalcViewData (cluster-based CalcViewData pipeline)
-//----------------------------------------------------------------------
-
-/**
- * ClusterCalcViewDataCS: one thread group per visible cluster.
- * 128 threads per group, groupshared proxy data.
- * Dispatch: INDIRECT using ClusterCalcViewDataIndirectArgs (VisibleClusterCount, 1, 1).
- */
-class FClusterCalcViewDataCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FClusterCalcViewDataCS);
-	SHADER_USE_PARAMETER_STRUCT(FClusterCalcViewDataCS, FGlobalShader);
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint4>, VisibleClusterWorkList)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterOutputOffsetsBuffer)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, GlobalPackedSplatBuffer)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, GlobalSHBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FProxyGPUMetadata>, ProxyMetadataBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FProxyRenderParams>, ProxyRenderParamsBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, GlobalSplatClusterIndexBuffer)
-		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ShadowSelectedClusterBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ClusterViewDataBuffer)
-		SHADER_PARAMETER(FMatrix44f, WorldToClip)
-		SHADER_PARAMETER(FMatrix44f, WorldToView)
-		SHADER_PARAMETER(FVector3f, PreViewTranslation)
-		SHADER_PARAMETER(FVector3f, CameraPosition)
-		SHADER_PARAMETER(FVector2f, ScreenSize)
-		SHADER_PARAMETER(FVector2f, FocalLength)
-		SHADER_PARAMETER(uint32, MaxRenderBudget)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
-};
-
-//----------------------------------------------------------------------
 // Cluster Prefix Sum (cluster-based CalcViewData pipeline)
 //----------------------------------------------------------------------
 
