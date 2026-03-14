@@ -41,8 +41,5 @@ IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListResetCS, "/Plugin/GaussianSp
 IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListCS, "/Plugin/GaussianSplatting/Private/BuildVisibleClusterWorkList.usf", "LeafCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FBuildVisibleClusterWorkListLODCS, "/Plugin/GaussianSplatting/Private/BuildVisibleClusterWorkList.usf", "LODCS", SF_Compute);
 
-// Cluster prefix sum (cluster-based CalcViewData pipeline)
-IMPLEMENT_GLOBAL_SHADER(FClusterPrefixSumCS, "/Plugin/GaussianSplatting/Private/ClusterPrefixSum.usf", "MainCS", SF_Compute);
-
 // Compaction prefix-sum shaders
 IMPLEMENT_GLOBAL_SHADER(FPrefixSumVisibleCountsCS,  "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);

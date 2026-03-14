@@ -433,10 +433,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						RawSplatBufferManager->DispatchBuildVisibleClusterWorkList(
 							RHICmdList, ProcessedProxies);
 
-						// [NEW] Cluster prefix sum (parallel test, old path continues)
-						RawSplatBufferManager->DispatchClusterPrefixSum(
-							RHICmdList, RawAccumulator, MaxRenderBudget);
-
 						// 3. Gather visible counts: reorder counts → GlobalVisibleCountArray
 						RawSplatBufferManager->DispatchGatherVisibleCountsGlobal(
 							RHICmdList, ProcessedProxies, RawAccumulator);
