@@ -36,7 +36,8 @@ float2 ScreenSize;
 float2 FocalLength;
 uint SplatCount;
 uint SHOrder;
-uint NumSHCoeffs;      // Total SH coefficients including DC (4, 9, or 16)
+uint NumSHCoeffs;      // Coefficients to evaluate (based on SHOrder: 4, 9, or 16)
+uint SHBufferCoeffs;   // Coefficients actually stored per splat in SHBuffer (based on asset SHBands)
 uint UseSHRendering;   // 1 = use view-dependent SH evaluation, 0 = use pre-computed DC color
 float OpacityScale;
 float SplatScale;
@@ -163,7 +164,7 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		// Load SH coefficients from buffer (DC + higher-order)
 		float3 shDC;
 		float3 sh[15];
-		LoadSH(SHBuffer, splatIndex, NumSHCoeffs, shDC, sh);
+		LoadSH(SHBuffer, splatIndex, SHBufferCoeffs, NumSHCoeffs, shDC, sh);
 
 		// Compute view direction in world space (FROM splat TO camera)
 		float3 viewDirWorld = normalize(CameraPosition - worldPos.xyz);
@@ -185,6 +186,10 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		// Compensate for position transform having negated Y axis (UE.Z = -PLY.Y)
 		// The SH coefficients expect the original PLY orientation, but our Y is flipped
 		viewDirPLY.y = -viewDirPLY.y;
+
+		// Renormalize: LocalToWorld may contain scale, which denormalizes viewDirLocal.
+		// SH basis functions require a unit direction vector.
+		viewDirPLY = normalize(viewDirPLY);
 
 		// Evaluate spherical harmonics with view direction
 		float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, SHOrder);

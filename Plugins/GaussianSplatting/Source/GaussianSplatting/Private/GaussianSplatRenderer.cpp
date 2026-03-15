@@ -134,6 +134,10 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.SHOrder = EffectiveSHOrder;
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	{
+		int32 StoredSHBands = GPUResources->GetSHBands();
+		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
@@ -774,6 +778,10 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.SHOrder = EffectiveSHOrder;
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	{
+		int32 StoredSHBands = GPUResources->GetSHBands();
+		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
@@ -913,6 +921,10 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.SHOrder = EffectiveSHOrder;
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	{
+		int32 StoredSHBands = GPUResources->GetSHBands();
+		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
@@ -1362,6 +1374,10 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.SHOrder       = EffectiveSHOrder;
 	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
 	Parameters.NumSHCoeffs   = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	{
+		int32 StoredSHBands = GPUResources->GetSHBands();
+		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale  = OpacityScale;
 	Parameters.SplatScale    = SplatScale;

@@ -47,7 +47,8 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(FVector2f, FocalLength)
 		SHADER_PARAMETER(uint32, SplatCount)
 		SHADER_PARAMETER(uint32, SHOrder)
-		SHADER_PARAMETER(uint32, NumSHCoeffs)      // Total SH coefficients including DC (4, 9, or 16)
+		SHADER_PARAMETER(uint32, NumSHCoeffs)      // Coefficients to evaluate (based on SHOrder: 4, 9, or 16)
+		SHADER_PARAMETER(uint32, SHBufferCoeffs)   // Coefficients actually stored per splat in SHBuffer (based on asset SHBands)
 		SHADER_PARAMETER(uint32, UseSHRendering)   // 1 = use view-dependent SH evaluation
 		SHADER_PARAMETER(float, OpacityScale)
 		SHADER_PARAMETER(float, SplatScale)

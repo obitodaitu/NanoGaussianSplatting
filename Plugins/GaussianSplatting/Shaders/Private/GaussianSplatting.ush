@@ -141,11 +141,12 @@ float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex,
 }
 
 // Load SH coefficients from buffer (includes DC at index 0)
-// numTotalCoeffs: total coefficients including DC (e.g., 16 for full band3)
-// Returns: shDC (DC coefficient), sh[15] (higher-order coefficients)
-void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numTotalCoeffs, out float3 shDC, out float3 sh[15])
+// bufferCoeffs:  total coefficients stored per splat in the buffer (based on asset SHBands, e.g. 16 for band3)
+// numEvalCoeffs: how many coefficients to actually load/evaluate (based on SHOrder, <= bufferCoeffs)
+// Returns: shDC (DC coefficient), sh[15] (higher-order coefficients up to numEvalCoeffs-1, rest zeroed)
+void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int bufferCoeffs, int numEvalCoeffs, out float3 shDC, out float3 sh[15])
 {
-	// Format: Float16, 3 channels * numTotalCoeffs * 2 bytes
+	// Format: Float16, 3 channels * bufferCoeffs * 2 bytes
 	// Each coefficient = 3 x float16 = 6 bytes
 	// ByteAddressBuffer requires 4-byte aligned reads, so we read from 4-byte
 	// aligned boundaries and extract the float16 values properly.
@@ -156,7 +157,8 @@ void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numTotalCoeffs, out
 	// - 3 bands: 16 coeffs × 6 bytes = 96 bytes (aligned)
 	// For 2 bands, odd splat indices have misaligned baseOffset.
 
-	uint bytesPerSplat = numTotalCoeffs * 3 * 2;
+	// Use bufferCoeffs (actual stored stride) for offset — NOT numEvalCoeffs.
+	uint bytesPerSplat = bufferCoeffs * 3 * 2;
 	uint baseOffset = splatIndex * bytesPerSplat;
 
 	// Helper function inlined: load 3 float16 values (6 bytes) from any byte offset
@@ -184,8 +186,8 @@ void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numTotalCoeffs, out
 		}
 	}
 
-	// Load higher-order coefficients
-	int numHigherCoeffs = numTotalCoeffs - 1;
+	// Load higher-order coefficients (only up to numEvalCoeffs, rest are zeroed)
+	int numHigherCoeffs = numEvalCoeffs - 1;
 	[unroll]
 	for (int i = 0; i < 15; i++)
 	{
