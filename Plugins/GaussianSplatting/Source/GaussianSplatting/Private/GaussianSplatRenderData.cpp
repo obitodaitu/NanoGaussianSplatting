@@ -158,7 +158,7 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 
 	bIsInitialized = true;
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatRenderData: Created shared CPU data for asset '%s' (%d splats)"),
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatRenderData: Created shared CPU data for asset '%s' (%d splats)"),
 		*AssetName, SplatCount);
 }
 
@@ -344,7 +344,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 
 	bGPUBuffersCreated = true;
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatRenderData: Created %d shared GPU buffers for asset '%s'"),
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatRenderData: Created %d shared GPU buffers for asset '%s'"),
 		SharedBufferCount, *AssetName);
 }
 

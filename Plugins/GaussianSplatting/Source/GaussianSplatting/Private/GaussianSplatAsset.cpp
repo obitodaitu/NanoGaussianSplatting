@@ -20,7 +20,7 @@ TSharedPtr<FGaussianSplatRenderData> UGaussianSplatAsset::GetOrCreateRenderData(
 {
 	if (RenderData.IsValid() && RenderData->IsInitialized())
 	{
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatRenderData: Reusing existing shared data for asset '%s'"),
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatRenderData: Reusing existing shared data for asset '%s'"),
 			*GetName());
 		return RenderData;
 	}

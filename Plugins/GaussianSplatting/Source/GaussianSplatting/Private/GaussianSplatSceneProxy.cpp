@@ -93,7 +93,7 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	int32 PerInstanceBufferCount = 0;
 	if (bSupportsCompaction) PerInstanceBufferCount += 15; // cluster/compaction/sort buffers
 	if (bSupportsIndirectDraw) PerInstanceBufferCount += 1;
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created %d per-instance buffers (shared data: %s)"),
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created %d per-instance buffers (shared data: %s)"),
 		PerInstanceBufferCount, *SharedData->GetAssetName());
 }
 
