@@ -32,7 +32,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 (Add GIF here)
 
-- Enable/Disable Nanite if needed
+- Enable/Disable Nanite through asset action if needed
 
 (Add GIF here)
 
