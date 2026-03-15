@@ -34,6 +34,16 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - [ ] Performance Tracking (insight, render pass)
 - [ ] Support relight
 
+
+## Settings
+
+
+
+
+Category | Variable | Description 
+--- | --- | --- 
+--- | 301 | 283 
+
 ## How To Use It
 - Simply press the import button to import PLY file
 <img width="903" height="303" alt="ImportPLY" src="https://github.com/user-attachments/assets/8192e65d-7f3e-4bc6-ade0-ca29159c900f" />
