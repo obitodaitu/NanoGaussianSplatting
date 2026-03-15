@@ -26,15 +26,15 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - Place the plugin inside project's "Plugins" folder
 - Press import button to import PLY file. A Gaussian Splat Asset will be created
 
-(Add GIF here)
+![Image](https://github.com/user-attachments/assets/2d784b1e-c2a1-4cb3-a891-2e80b84e6c28)
 
 - Drag the Gaussian Splat Asset directly into the level
 
-(Add GIF here)
+![Image](https://github.com/user-attachments/assets/52d63cca-e850-478b-a6bb-ed88efce1f97)
 
 - Enable/Disable Nanite through asset action if needed
 
-(Add GIF here)
+![Image](https://github.com/user-attachments/assets/5b5d7d44-a142-46ae-bbb6-bcae1856cca3)
 
 
 ## Settings
