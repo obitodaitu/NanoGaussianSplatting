@@ -10,17 +10,6 @@ Unreal Engine has the feature like Nanite for handling high poly/large scale mes
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
 This project primarily aims to solve this issue though dynamic streaming methods.
 
-## Temporary Result
-- 1 million gaussian splats in 120 fps
-
-![Temp](https://github.com/user-attachments/assets/71afa392-4e3d-49e1-ae3b-5cebe31621a8)
-
-- Nanite-like gaussin splatting performance optimization solution
-
-<img width="1594" height="641" alt="Nanite1" src="https://github.com/user-attachments/assets/0c028439-3bc7-4cb8-8e46-dc986a267675" />
-<img width="1915" height="1025" alt="Nanite2" src="https://github.com/user-attachments/assets/71612017-103c-41b5-8240-fb13dd98f485" />
-
-
 
 ## How To Use It
 - Place the plugin inside project's "Plugins" folder
