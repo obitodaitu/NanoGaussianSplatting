@@ -1,7 +1,6 @@
-# UEGaussianSplatting (WIP)
+# UEGaussianSplatting
 
-> Still Work In Progress! Not Done Yet!
-
+![Image](https://github.com/user-attachments/assets/83ae3ba1-9414-4cb5-8703-19a15abddd21)
 Supported Unreal Engine version: UE5.6+
 
 ## Overview
@@ -9,7 +8,7 @@ Loading and rendering highly detailed large scale assets in 3D software is alway
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
 This project primarily aims to solve this issue though dynamic streaming methods.
-![Image](https://github.com/user-attachments/assets/83ae3ba1-9414-4cb5-8703-19a15abddd21)
+
 
 ## How To Use It
 - Place the plugin inside project's "Plugins" folder
