@@ -2,6 +2,8 @@
 
 > Still Work In Progress! Not Done Yet!
 
+Supported Unreal Engine version: UE5.6+
+
 ## Overview
 Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
@@ -21,6 +23,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 
 ## How To Use It
+- Place the plugin inside project's "Plugins" folder
 - Press import button to import PLY file. A Gaussian Splat Asset will be created
 
 (Add GIF here)
