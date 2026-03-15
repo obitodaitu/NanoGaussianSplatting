@@ -3,6 +3,7 @@
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianSplatComponent.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatRenderData.h"
 #include "GaussianSplatViewExtension.h"
 #include "Engine/Texture2D.h"
 #include "RHICommandList.h"
@@ -31,170 +32,31 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 		return;
 	}
 
-	SplatCount = Asset->GetSplatCount();
-
-	// Store the position format from the asset (critical for shader to read correctly)
-	PositionFormat = Asset->PositionFormat;
-
-	// --- Packed Splat Data (16 bytes/splat) ---
-	// Pack position (float16×3), rotation (octahedral 3 bytes), scale (log uint8×3),
-	// and color+opacity (uint8×4) into a single buffer, replacing separate
-	// PositionBuffer (12 B), OtherDataBuffer (28 B), and ColorTexture (~8 B).
+	// Get or create shared render data (CPU-side cached data, loaded once per asset)
+	TSharedPtr<FGaussianSplatRenderData> SharedData = Asset->GetOrCreateRenderData();
+	if (!SharedData.IsValid() || !SharedData->IsInitialized())
 	{
-		// Read source data from asset bulk data
-		TArray<uint8> RawPositionData;
-		TArray<uint8> RawOtherData;
-		TArray<uint8> RawColorTextureData;
-		Asset->GetPositionData(RawPositionData);
-		Asset->GetOtherData(RawOtherData);
-		Asset->GetColorTextureData(RawColorTextureData);
-
-		const int32 ColorTexWidth = Asset->ColorTextureWidth;
-		const int32 ColorTexHeight = Asset->ColorTextureHeight;
-		const FFloat16Color* ColorPixels = nullptr;
-		bool bHasColor = (RawColorTextureData.Num() > 0 && ColorTexWidth > 0 && ColorTexHeight > 0);
-		if (bHasColor)
-		{
-			ColorPixels = reinterpret_cast<const FFloat16Color*>(RawColorTextureData.GetData());
-		}
-
-		const int32 PosBytesPerSplat = 12;   // 3 × float32
-		const int32 OtherBytesPerSplat = 28; // 4 × float32 (quat) + 3 × float32 (scale)
-
-		CachedPackedSplatData.SetNumUninitialized(SplatCount * GaussianSplattingConstants::PackedSplatStride);
-		uint32* PackedPtr = reinterpret_cast<uint32*>(CachedPackedSplatData.GetData());
-		const float* PosFloats = reinterpret_cast<const float*>(RawPositionData.GetData());
-		const float* OtherFloats = reinterpret_cast<const float*>(RawOtherData.GetData());
-
-		for (int32 i = 0; i < SplatCount; i++)
-		{
-			// Read position (3 × float32)
-			FVector3f Position(
-				PosFloats[i * 3 + 0],
-				PosFloats[i * 3 + 1],
-				PosFloats[i * 3 + 2]);
-
-			// Read rotation (quaternion XYZW) and scale (3 × float32)
-			const float* OtherBase = OtherFloats + i * 7; // 28 bytes / 4 = 7 floats
-			FQuat4f Rotation(OtherBase[0], OtherBase[1], OtherBase[2], OtherBase[3]);
-			FVector3f Scale(OtherBase[4], OtherBase[5], OtherBase[6]);
-
-			// Read color from Morton-swizzled texture
-			float ColorR = 1.0f, ColorG = 1.0f, ColorB = 1.0f, Opacity = 1.0f;
-			if (bHasColor)
-			{
-				int32 TexX, TexY;
-				GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTexWidth, TexX, TexY);
-				if (TexY < ColorTexHeight)
-				{
-					const FFloat16Color& Pixel = ColorPixels[TexY * ColorTexWidth + TexX];
-					ColorR = FMath::Clamp(Pixel.R.GetFloat(), 0.0f, 1.0f);
-					ColorG = FMath::Clamp(Pixel.G.GetFloat(), 0.0f, 1.0f);
-					ColorB = FMath::Clamp(Pixel.B.GetFloat(), 0.0f, 1.0f);
-					Opacity = FMath::Clamp(Pixel.A.GetFloat(), 0.0f, 1.0f);
-				}
-			}
-
-			// Pack into 4 × uint32 (16 bytes)
-			GaussianSplattingUtils::PackSplatToUint4(
-				Position, Rotation, Scale,
-				ColorR, ColorG, ColorB, Opacity,
-				&PackedPtr[i * 4]);
-		}
-
-		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Packed %d splats into %d bytes (16 B/splat, was %d B/splat)"),
-			SplatCount, CachedPackedSplatData.Num(), PosBytesPerSplat + OtherBytesPerSplat);
-
-		// Source data no longer needed
-		RawPositionData.Empty();
-		RawOtherData.Empty();
-		RawColorTextureData.Empty();
+		return;
 	}
 
-	// Legacy: chunk data still needed for shader binding (dummy)
-	CachedChunkData = Asset->ChunkData;
+	// Copy metadata from shared render data
+	SplatCount = SharedData->SplatCount;
+	PositionFormat = SharedData->PositionFormat;
+	SHBands = SharedData->SHBands;
+	bEnableNanite = SharedData->bEnableNanite;
+	bHasClusterData = SharedData->bHasClusterData;
+	ClusterCount = SharedData->ClusterCount;
+	LeafClusterCount = SharedData->LeafClusterCount;
+	LODSplatCount = SharedData->LODSplatCount;
+	bHasLODSplats = SharedData->bHasLODSplats;
 
-	// Load SH data for view-dependent rendering (f_rest coefficients)
-	if (Asset->SHBands > 0)
-	{
-		Asset->GetSHData(CachedSHData);
-		SHBands = Asset->SHBands;
-		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Loaded %lld bytes of SH data (bands=%d)"),
-			CachedSHData.Num(), SHBands);
-	}
-
-	// Set Nanite enabled flag from asset
-	bEnableNanite = Asset->IsNaniteEnabled();
-
-	// Cache cluster hierarchy data if Nanite is enabled and available
-	if (bEnableNanite && Asset->HasClusterHierarchy())
-	{
-		const FGaussianClusterHierarchy& Hierarchy = Asset->GetClusterHierarchy();
-		Hierarchy.ToGPUClusters(CachedClusterData);
-		ClusterCount = CachedClusterData.Num();
-		LeafClusterCount = Hierarchy.NumLeafClusters;
-		bHasClusterData = true;
-
-		// UNIFIED APPROACH: LOD splats are now appended to main buffer
-		// TotalSplatCount = original splats, TotalLODSplatCount = LOD splats
-		// SplatCount (from asset) = TotalSplatCount + TotalLODSplatCount
-		const uint32 OriginalSplatCount = Hierarchy.TotalSplatCount;
-		LODSplatCount = Hierarchy.TotalLODSplatCount;
-		bHasLODSplats = (LODSplatCount > 0);
-
-		// Build unified splat-to-cluster index mapping
-		// Each splat needs to know which cluster it belongs to for visibility checks
-		CachedSplatClusterIndices.SetNumZeroed(SplatCount);
-
-		// Map original splats to their leaf clusters
-		for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
-		{
-			const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
-			// Only leaf clusters contain original splats
-			if (Cluster.IsLeaf())
-			{
-				for (uint32 i = 0; i < Cluster.SplatCount; ++i)
-				{
-					uint32 SplatIdx = Cluster.SplatStartIndex + i;
-					if (SplatIdx < OriginalSplatCount)
-					{
-						CachedSplatClusterIndices[SplatIdx] = ClusterIdx;
-					}
-				}
-			}
-		}
-
-		// Map LOD splats to their parent clusters (unified buffer approach)
-		// LOD splats are at indices [OriginalSplatCount, SplatCount)
-		// Cluster.LODSplatStartIndex now points into the unified buffer
-		for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
-		{
-			const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
-			// Only non-leaf clusters have LOD splats
-			if (!Cluster.IsLeaf() && Cluster.LODSplatCount > 0)
-			{
-				for (uint32 i = 0; i < Cluster.LODSplatCount; ++i)
-				{
-					uint32 SplatIdx = Cluster.LODSplatStartIndex + i;
-					if (SplatIdx < static_cast<uint32>(SplatCount))
-					{
-						CachedSplatClusterIndices[SplatIdx] = ClusterIdx;
-					}
-				}
-			}
-		}
-
-		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf), %d original + %d LOD = %d total splats (unified buffer)"),
-			ClusterCount, LeafClusterCount, OriginalSplatCount, LODSplatCount, SplatCount);
-	}
-	else
-	{
-		bHasClusterData = false;
-		ClusterCount = 0;
-		LeafClusterCount = 0;
-		bHasLODSplats = false;
-		LODSplatCount = 0;
-	}
+	// Copy cached data from shared render data for GPU upload
+	CachedPackedSplatData = SharedData->PackedSplatData;
+	CachedChunkData = SharedData->ChunkData;
+	CachedSHData = SharedData->SHData;
+	CachedClusterData = SharedData->ClusterData;
+	CachedSplatClusterIndices = SharedData->SplatClusterIndices;
+	CachedLODSplatClusterIndices = SharedData->LODSplatClusterIndices;
 
 	// Initialize render resource
 	if (!bInitialized)

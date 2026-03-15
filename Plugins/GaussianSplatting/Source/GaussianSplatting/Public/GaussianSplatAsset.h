@@ -11,6 +11,7 @@
 
 // Forward declaration
 class UGaussianSplatAsset;
+class FGaussianSplatRenderData;
 
 // Delegate fired when asset data changes (e.g., Nanite enabled/disabled)
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplatAsset*);
@@ -108,6 +109,12 @@ public:
 
 	/** Delegate fired when asset data changes (Nanite enabled/disabled, reimport, etc.) */
 	FOnGaussianSplatAssetChanged OnAssetChanged;
+
+	/** Get or create shared render data for this asset.
+	 *  Lazy-initialized on first call; subsequent calls return the existing data.
+	 *  Shared across all scene proxies referencing this asset.
+	 */
+	TSharedPtr<FGaussianSplatRenderData> GetOrCreateRenderData();
 
 public:
 	/** Total number of splats */
@@ -275,6 +282,9 @@ public:
 
 	/** Get size of color texture bulk data in bytes */
 	int64 GetColorTextureDataSize() const { return ColorTextureBulkData.GetBulkDataSize(); }
+
+	/** Shared render data (lazy-initialized, shared across all proxies) */
+	TSharedPtr<FGaussianSplatRenderData> RenderData;
 
 private:
 	/** Compress and store position data */

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatRenderData.h"
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
 #include "GaussianClusterBuilder.h"
@@ -13,6 +14,20 @@
 UGaussianSplatAsset::UGaussianSplatAsset()
 {
 	BoundingBox.Init();
+}
+
+TSharedPtr<FGaussianSplatRenderData> UGaussianSplatAsset::GetOrCreateRenderData()
+{
+	if (RenderData.IsValid() && RenderData->IsInitialized())
+	{
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatRenderData: Reusing existing shared data for asset '%s'"),
+			*GetName());
+		return RenderData;
+	}
+
+	RenderData = MakeShared<FGaussianSplatRenderData>();
+	RenderData->Initialize(this);
+	return RenderData;
 }
 
 void UGaussianSplatAsset::Serialize(FArchive& Ar)
@@ -688,6 +703,9 @@ bool UGaussianSplatAsset::BuildNaniteClusterHierarchy()
 	UE_LOG(LogTemp, Log, TEXT("BuildNaniteClusterHierarchy: Successfully built Nanite hierarchy. Total splats: %d, Clusters: %d"),
 		SplatCount, ClusterHierarchy.Clusters.Num());
 
+	// Invalidate shared render data so it will be recreated with new cluster data
+	RenderData.Reset();
+
 	// Notify listeners (components) that asset has changed so they can recreate their scene proxies
 	OnAssetChanged.Broadcast(this);
 
@@ -739,6 +757,9 @@ void UGaussianSplatAsset::ClearNaniteClusterHierarchy()
 	MarkPackageDirty();
 
 	UE_LOG(LogTemp, Log, TEXT("ClearNaniteClusterHierarchy: Cleared Nanite hierarchy"));
+
+	// Invalidate shared render data so it will be recreated without cluster data
+	RenderData.Reset();
 
 	// Notify listeners (components) that asset has changed so they can recreate their scene proxies
 	OnAssetChanged.Broadcast(this);
