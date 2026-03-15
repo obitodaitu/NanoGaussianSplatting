@@ -102,7 +102,7 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 				&PackedPtr[i * 4]);
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Packed %d splats into %d bytes (16 B/splat, was %d B/splat)"),
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Packed %d splats into %d bytes (16 B/splat, was %d B/splat)"),
 			SplatCount, CachedPackedSplatData.Num(), PosBytesPerSplat + OtherBytesPerSplat);
 
 		// Source data no longer needed
@@ -119,7 +119,7 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	{
 		Asset->GetSHData(CachedSHData);
 		SHBands = Asset->SHBands;
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %lld bytes of SH data (bands=%d)"),
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Loaded %lld bytes of SH data (bands=%d)"),
 			CachedSHData.Num(), SHBands);
 	}
 
@@ -184,7 +184,7 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 			}
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf), %d original + %d LOD = %d total splats (unified buffer)"),
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf), %d original + %d LOD = %d total splats (unified buffer)"),
 			ClusterCount, LeafClusterCount, OriginalSplatCount, LODSplatCount, SplatCount);
 	}
 	else
