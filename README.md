@@ -37,9 +37,16 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 ## Settings
 
-Category | Variable | Description 
---- | --- | --- 
---- | 301 | 283 
+
+| Category | Variable | Description |
+| :--- | :--- | :--- |
+| Quality | SH Order | sphere harmonics order |
+| Performance | Sort Every Nth Frame | adjust gaussian splats sorting speed |
+| Performance | Enable Frustum Culling | enable/disable frustum culling |
+| Performance | LOD Error Threshold | LOD cluster switching sensitivity |
+| Rendering | Opacity Scale | adjuct the opacity of gaussian splats|
+| Rendering | Splat Scale | adjuct the scale of gaussian splats|
+
 
 ## How To Use It
 - Simply press the import button to import PLY file
