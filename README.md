@@ -20,23 +20,22 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 
 
-## To Do List
-- [x] Import, process PLY file and save as uasset
-- [x] Render splats at given postiion
-- [x] Add efficient sorting algorith: Radix Sort
-- [x] Render color and alpha blending
-- [x] Hook render result into Unreal Engine's render pipeline: before post process
-- [x] Speed up serialize and deserialize process: Bulk Data
-- [x] Hierarchical Data Structure: Cluster + LOD
-- [ ] Dynamic switching micro LOD
-- [ ] Dynamic load and unload macro tiles
-- [ ] Anti Aliasing
-- [ ] Performance Tracking (insight, render pass)
-- [ ] Support relight
+## How To Use It
+- Press import button to import PLY file. A Gaussian Splat Asset will be created
+
+(Add GIF here)
+
+- Drag the Gaussian Splat Asset directly into the level
+
+(Add GIF here)
+
+- Enable/Disable Nanite if needed
+
+(Add GIF here)
 
 
 ## Settings
-
+(add image here)
 
 | Category | Variable | Description |
 | :--- | :--- | :--- |
@@ -47,16 +46,6 @@ This project primarily aims to solve this issue though dynamic streaming methods
 | Rendering | Opacity Scale | adjuct the opacity of gaussian splats|
 | Rendering | Splat Scale | adjuct the scale of gaussian splats|
 
-
-## How To Use It
-- Simply press the import button to import PLY file
-<img width="903" height="303" alt="ImportPLY" src="https://github.com/user-attachments/assets/8192e65d-7f3e-4bc6-ade0-ca29159c900f" />
-
-- Add Gaussian Splat Actor to the level
-<img width="929" height="248" alt="GaussianSplatActor" src="https://github.com/user-attachments/assets/96ecbb2d-18f0-42a5-a6d2-32db1480743c" />
-
-- Assign the imported PLY uasset to the Gaussian Splat Actor
-<img width="927" height="475" alt="GaussianSplatActorAssign" src="https://github.com/user-attachments/assets/00083594-29b4-4706-90ce-af19e6ff6ba7" />
 
 ## Debug Console Command
 - `gs.ShowClusterBounds 1`: enable Nanite cluster preview (set to 0 to disable preview)
