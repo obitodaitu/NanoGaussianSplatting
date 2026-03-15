@@ -93,12 +93,27 @@ struct FGaussianSplatData
 			SH[i] = FVector3f::ZeroVector;
 		}
 	}
+
+	/** Serialization */
+	friend FArchive& operator<<(FArchive& Ar, FGaussianSplatData& Splat)
+	{
+		Ar << Splat.Position;
+		Ar << Splat.Rotation;
+		Ar << Splat.Scale;
+		Ar << Splat.Opacity;
+		Ar << Splat.SH_DC;
+		for (int32 i = 0; i < 15; i++)
+		{
+			Ar << Splat.SH[i];
+		}
+		return Ar;
+	}
 };
 
 /**
  * Per-frame view data computed by compute shader, used by vertex shader
  * This structure must match the HLSL definition in GaussianDataTypes.ush
- * Total: 32 bytes per splat
+ * Total: 64 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
  */
 USTRUCT()
 struct FGaussianSplatViewData
@@ -107,6 +122,12 @@ struct FGaussianSplatViewData
 
 	/** Clip space position (xyz/w) */
 	FVector4f ClipPosition = FVector4f::Zero();
+
+	/** Translated world position for velocity calculation (world + PreViewTranslation) */
+	FVector3f TranslatedWorldPos = FVector3f::ZeroVector;
+
+	/** Padding after TranslatedWorldPos for alignment */
+	float TranslatedWorldPosPad = 0.0f;
 
 	/** Half-float packed R,G channels */
 	uint32 PackedColorRG = 0;
@@ -119,6 +140,12 @@ struct FGaussianSplatViewData
 
 	/** 2D covariance principal axis 2 (screen space) */
 	FVector2f Axis2 = FVector2f::ZeroVector;
+
+	/** Cluster ID for debug visualization (Nanite-style) */
+	uint32 ClusterID = 0;
+
+	/** Padding for 16-byte alignment */
+	uint32 Padding = 0;
 };
 
 /**
@@ -194,6 +221,13 @@ namespace GaussianSplattingConstants
 
 	/** Maximum supported SH order (0-3) */
 	constexpr int32 MaxSHOrder = 3;
+
+	/** Log-scale encoding range for packed splat format (in centimeters) */
+	constexpr float LN_SCALE_MIN = -8.0f;   // covers ~0.0003 cm
+	constexpr float LN_SCALE_MAX = 14.0f;    // covers ~1.2 million cm
+
+	/** Packed splat stride in bytes (4 x uint32) */
+	constexpr int32 PackedSplatStride = 16;
 }
 
 /**
@@ -305,5 +339,106 @@ namespace GaussianSplattingUtils
 			return FQuat4f(Q.X * InvLength, Q.Y * InvLength, Q.Z * InvLength, Q.W * InvLength);
 		}
 		return FQuat4f::Identity;
+	}
+
+	/** Encode a linear scale value to uint8 using log encoding */
+	inline uint8 EncodeScaleUint8(float Scale)
+	{
+		if (Scale < 1e-10f) return 0;  // sentinel for truly zero scale
+		float LnScale = FMath::Loge(Scale);
+		float Normalized = (LnScale - GaussianSplattingConstants::LN_SCALE_MIN)
+			* 254.0f / (GaussianSplattingConstants::LN_SCALE_MAX - GaussianSplattingConstants::LN_SCALE_MIN);
+		return (uint8)FMath::Clamp(FMath::RoundToInt(Normalized) + 1, 1, 255);
+	}
+
+	/** Encode quaternion to octahedral axis-angle representation (3 bytes: U, V, Angle) */
+	inline void EncodeQuatOctahedral(FQuat4f Q, uint8& OutU, uint8& OutV, uint8& OutAngle)
+	{
+		// Normalize
+		Q = NormalizeQuat(Q);
+
+		// Ensure W >= 0 so theta is in [0, pi]
+		if (Q.W < 0.0f)
+		{
+			Q.X = -Q.X; Q.Y = -Q.Y; Q.Z = -Q.Z; Q.W = -Q.W;
+		}
+
+		// Compute rotation angle
+		float Theta = 2.0f * FMath::Acos(FMath::Clamp(Q.W, -1.0f, 1.0f));
+
+		// Extract rotation axis
+		float AxisLen = FMath::Sqrt(Q.X * Q.X + Q.Y * Q.Y + Q.Z * Q.Z);
+		FVector3f Axis;
+		if (AxisLen < 1e-8f)
+		{
+			Axis = FVector3f(1.0f, 0.0f, 0.0f);  // Arbitrary axis for identity rotation
+		}
+		else
+		{
+			float InvLen = 1.0f / AxisLen;
+			Axis = FVector3f(Q.X * InvLen, Q.Y * InvLen, Q.Z * InvLen);
+		}
+
+		// Octahedral projection: map unit sphere to [-1,1]^2
+		float AbsSum = FMath::Abs(Axis.X) + FMath::Abs(Axis.Y) + FMath::Abs(Axis.Z);
+		float Px = Axis.X / AbsSum;
+		float Py = Axis.Y / AbsSum;
+
+		// Fold lower hemisphere
+		if (Axis.Z < 0.0f)
+		{
+			float OrigPx = Px;
+			float OrigPy = Py;
+			Px = (1.0f - FMath::Abs(OrigPy)) * (OrigPx >= 0.0f ? 1.0f : -1.0f);
+			Py = (1.0f - FMath::Abs(OrigPx)) * (OrigPy >= 0.0f ? 1.0f : -1.0f);
+		}
+
+		// Map [-1,1] to [0,1]
+		float U = Px * 0.5f + 0.5f;
+		float V = Py * 0.5f + 0.5f;
+
+		// Quantize to uint8
+		OutU = (uint8)FMath::Clamp(FMath::RoundToInt(U * 255.0f), 0, 255);
+		OutV = (uint8)FMath::Clamp(FMath::RoundToInt(V * 255.0f), 0, 255);
+		OutAngle = (uint8)FMath::Clamp(FMath::RoundToInt(Theta / UE_PI * 255.0f), 0, 255);
+	}
+
+	/**
+	 * Pack a single splat into 4 uint32 words (16 bytes total).
+	 * Layout matches SparkJS PackedSplats format.
+	 * @param Position UE centimeter coordinates (float16 covers ±655m from origin)
+	 * @param Rotation UE convention quaternion (X,Y,Z,W)
+	 * @param Scale UE centimeter linear scale
+	 * @param ColorR/G/B sRGB color [0,1] (clamped to uint8)
+	 * @param Opacity Linear opacity [0,1]
+	 */
+	inline void PackSplatToUint4(
+		const FVector3f& Position,
+		const FQuat4f& Rotation,
+		const FVector3f& Scale,
+		float ColorR, float ColorG, float ColorB, float Opacity,
+		uint32 OutWords[4])
+	{
+		// Word 0: R|G|B|A (uint8 each)
+		uint8 R = (uint8)FMath::Clamp(FMath::RoundToInt(ColorR * 255.0f), 0, 255);
+		uint8 G = (uint8)FMath::Clamp(FMath::RoundToInt(ColorG * 255.0f), 0, 255);
+		uint8 B = (uint8)FMath::Clamp(FMath::RoundToInt(ColorB * 255.0f), 0, 255);
+		uint8 A = (uint8)FMath::Clamp(FMath::RoundToInt(Opacity * 255.0f), 0, 255);
+		OutWords[0] = (uint32)R | ((uint32)G << 8) | ((uint32)B << 16) | ((uint32)A << 24);
+
+		// Word 1: PosX (float16) | PosY (float16)
+		OutWords[1] = PackHalf2x16(Position.X, Position.Y);
+
+		// Word 2: PosZ (float16) | QuatU (uint8) | QuatV (uint8)
+		uint8 QuatU, QuatV, QuatAngle;
+		EncodeQuatOctahedral(Rotation, QuatU, QuatV, QuatAngle);
+		uint16 PosZHalf = FloatToHalf(Position.Z);
+		OutWords[2] = (uint32)PosZHalf | ((uint32)QuatU << 16) | ((uint32)QuatV << 24);
+
+		// Word 3: ScaleX|ScaleY|ScaleZ (uint8 log-encoded) | QuatAngle (uint8)
+		uint8 SX = EncodeScaleUint8(Scale.X);
+		uint8 SY = EncodeScaleUint8(Scale.Y);
+		uint8 SZ = EncodeScaleUint8(Scale.Z);
+		OutWords[3] = (uint32)SX | ((uint32)SY << 8) | ((uint32)SZ << 16) | ((uint32)QuatAngle << 24);
 	}
 }

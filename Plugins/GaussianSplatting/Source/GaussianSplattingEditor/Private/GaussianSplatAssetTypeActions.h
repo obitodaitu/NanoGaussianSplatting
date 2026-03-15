@@ -9,7 +9,7 @@ class UGaussianSplatAsset;
 
 /**
  * Asset type actions for Gaussian Splat assets
- * Provides editor integration like custom color, category, and actions
+ * Provides content browser editor integration like custom color, category, and actions
  */
 class FAssetTypeActions_GaussianSplatAsset : public FAssetTypeActions_Base
 {
@@ -30,4 +30,16 @@ private:
 
 	/** Handler for showing asset info */
 	void ExecuteShowInfo(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
+	/** Handler for enabling Nanite */
+	void ExecuteEnableNanite(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
+	/** Handler for disabling Nanite */
+	void ExecuteDisableNanite(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
+	/** Check if all selected assets have Nanite enabled */
+	bool AreAllNaniteEnabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;
+
+	/** Check if all selected assets have Nanite disabled */
+	bool AreAllNaniteDisabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;
 };

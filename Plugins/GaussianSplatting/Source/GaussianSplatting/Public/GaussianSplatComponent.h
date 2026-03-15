@@ -77,6 +77,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance")
 	bool bEnableFrustumCulling = true;
 
+	/** Projected error threshold for LOD selection (resolution-independent, like Nanite).
+	 *  Lower values = more conservative (keep detail longer, less LOD savings)
+	 *  Higher values = more aggressive (switch to LOD sooner, better performance)
+	 *  Uses projection-space units. ~0.03 ≈ 32 pixels at 1080p with 90° FOV. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	float LODErrorThreshold = 0.03f;
+
 protected:
 	/** Called when the asset changes */
 	void OnAssetChanged();
@@ -84,8 +91,20 @@ protected:
 	/** Mark the render state as dirty */
 	void MarkRenderStateDirty();
 
+	/** Called when the asset's data changes (e.g., Nanite enabled/disabled) */
+	void OnAssetDataChanged(class UGaussianSplatAsset* ChangedAsset);
+
+	/** Subscribe to asset change notifications */
+	void SubscribeToAssetChanges();
+
+	/** Unsubscribe from asset change notifications */
+	void UnsubscribeFromAssetChanges();
+
 private:
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
 	mutable bool bBoundsCached = false;
+
+	/** Delegate handle for asset change subscription */
+	FDelegateHandle AssetChangedDelegateHandle;
 };

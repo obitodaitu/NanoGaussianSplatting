@@ -94,6 +94,9 @@ EReimportResult::Type UGaussianSplatAssetFactory::Reimport(UObject* Obj)
 		return EReimportResult::Failed;
 	}
 
+	// Preserve Nanite setting before reimport
+	const bool bWasNaniteEnabled = Asset->IsNaniteEnabled();
+
 	// Use the original quality level
 	QualityLevel = Asset->ImportQuality;
 
@@ -107,6 +110,15 @@ EReimportResult::Type UGaussianSplatAssetFactory::Reimport(UObject* Obj)
 
 	if (ReimportedAsset)
 	{
+		// If Nanite was enabled before reimport, rebuild the cluster hierarchy
+		if (bWasNaniteEnabled)
+		{
+			UE_LOG(LogTemp, Log, TEXT("Reimport: Rebuilding Nanite cluster hierarchy (was enabled before reimport)"));
+			if (!ReimportedAsset->BuildNaniteClusterHierarchy())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Reimport: Failed to rebuild Nanite cluster hierarchy"));
+			}
+		}
 		return EReimportResult::Succeeded;
 	}
 
@@ -128,14 +140,15 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 
 	TArray<FGaussianSplatData> SplatData;
 	FString ErrorMessage;
+	int32 DetectedSHBands = 0;
 
-	if (!FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage))
+	if (!FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage, &DetectedSHBands))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed to read PLY file: %s"), *ErrorMessage);
 		return nullptr;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file"), SplatData.Num());
+	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file (SH bands: %d)"), SplatData.Num(), DetectedSHBands);
 
 	// Create or reuse asset
 	SlowTask.EnterProgressFrame(10.0f, FText::FromString(TEXT("Creating asset...")));
@@ -155,15 +168,21 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	// Store source file path
 	Asset->SourceFilePath = FilePath;
 
-	// Initialize asset from splat data
-	SlowTask.EnterProgressFrame(60.0f, FText::FromString(TEXT("Compressing splat data...")));
+	// Set the detected SH band count BEFORE initializing (CompressSH uses this)
+	Asset->SHBands = DetectedSHBands;
+
+	// Initialize asset from splat data (NO cluster building - user enables Nanite via Asset Actions)
+	SlowTask.EnterProgressFrame(55.0f, FText::FromString(TEXT("Compressing splat data...")));
 
 	Asset->InitializeFromSplatData(SplatData, QualityLevel);
+
+	// NO cluster hierarchy by default - user enables Nanite via Asset Actions > Nanite
+	Asset->ClusterHierarchy.Reset();
 
 	// Mark package dirty
 	Asset->MarkPackageDirty();
 
-	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %lld bytes"),
+	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %lld bytes (Nanite disabled by default)"),
 		Asset->GetSplatCount(), Asset->GetMemoryUsage());
 
 	return Asset;

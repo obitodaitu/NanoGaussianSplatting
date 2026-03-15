@@ -6,17 +6,23 @@
 #define SPLATS_PER_CHUNK 256
 #define COLOR_TEXTURE_WIDTH 2048
 #define MORTON_TILE_SIZE 16
-#define NUM_SH_COEFFICIENTS 15
+#define NUM_SH_HIGHER_COEFFICIENTS 15  // Higher-order coefficients (bands 1-3)
+#define NUM_SH_TOTAL_COEFFICIENTS 16   // Including DC (band 0)
 #define SH_C0 0.28209479177387814f
 
 // Per-frame view data structure (must match C++ FGaussianSplatViewData)
+// Total: 64 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
 struct FGaussianSplatViewData
 {
-	float4 ClipPosition;    // Clip space position (xyz, w)
-	uint PackedColorRG;     // Half-float packed R,G
-	uint PackedColorBA;     // Half-float packed B,A
-	float2 Axis1;           // 2D covariance principal axis 1
-	float2 Axis2;           // 2D covariance principal axis 2
+	float4 ClipPosition;       // Clip space position (xyz, w)
+	float3 TranslatedWorldPos; // Translated world position for velocity calculation
+	float TranslatedWorldPosPad; // Padding for alignment
+	uint PackedColorRG;        // Half-float packed R,G
+	uint PackedColorBA;        // Half-float packed B,A
+	float2 Axis1;              // 2D covariance principal axis 1
+	float2 Axis2;              // 2D covariance principal axis 2
+	uint ClusterID;            // Cluster ID for debug visualization
+	uint Padding;              // Padding for 16-byte alignment
 };
 
 // Chunk info for quantized data (must match C++ FGaussianChunkInfo)
@@ -36,6 +42,31 @@ struct FGaussianChunkInfo
 	uint SHMinMaxG;
 	uint SHMinMaxB;
 };
+
+// GPU cluster data for Nanite-style culling (must match C++ FGaussianGPUCluster)
+// Total: 80 bytes (16-byte aligned)
+struct FGaussianGPUCluster
+{
+	float3 BoundsMin;
+	uint SplatStartIndex;
+	float3 BoundsMax;
+	uint SplatCount;
+	float4 BoundingSphere; // xyz=center, w=radius
+	uint ParentIndex;
+	uint LODLevel;
+	float MaxError;
+	uint LODSplatStartIndex;
+	uint LODSplatCount;
+	uint Padding[3];
+};
+
+// NOTE: FGaussianGPULODSplat has been removed in the unified approach.
+// LOD splats now use the same format as original splats and are stored in the
+// same buffers (Position, OtherData, ColorTexture). This ensures a single
+// source of truth and shader compatibility.
+
+// Invalid cluster ID marker
+#define INVALID_CLUSTER_ID 0xFFFFFFFF
 
 // Pack two half floats into a uint
 uint PackHalf2x16(float2 v)

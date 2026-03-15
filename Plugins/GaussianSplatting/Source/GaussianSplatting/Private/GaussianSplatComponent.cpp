@@ -36,7 +36,8 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SHOrder) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, OpacityScale) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale))
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, LODErrorThreshold))
 	{
 		MarkRenderStateDirty();
 	}
@@ -47,18 +48,18 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 
 void UGaussianSplatComponent::OnRegister()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: OnRegister called!"));
 	Super::OnRegister();
 
 	if (SplatAsset)
 	{
 		bBoundsCached = false;
+		SubscribeToAssetChanges();
 	}
 }
 
 void UGaussianSplatComponent::OnUnregister()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: OnUnregister called!"));
+	UnsubscribeFromAssetChanges();
 	Super::OnUnregister();
 }
 
@@ -69,8 +70,6 @@ void UGaussianSplatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateSceneProxy called!"));
-
 	if (!SplatAsset || !SplatAsset->IsValid())
 	{
 		return nullptr;
@@ -116,7 +115,17 @@ void UGaussianSplatComponent::SetSplatAsset(UGaussianSplatAsset* NewAsset)
 {
 	if (SplatAsset != NewAsset)
 	{
+		// Unsubscribe from old asset
+		UnsubscribeFromAssetChanges();
+
 		SplatAsset = NewAsset;
+
+		// Subscribe to new asset
+		if (IsRegistered())
+		{
+			SubscribeToAssetChanges();
+		}
+
 		OnAssetChanged();
 	}
 }
@@ -135,12 +144,46 @@ void UGaussianSplatComponent::OnAssetChanged()
 
 void UGaussianSplatComponent::MarkRenderStateDirty()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: MarkRenderStateDirty called!"));
-
 	MarkRenderDynamicDataDirty();
 
 	if (IsRegistered())
 	{
 		Super::MarkRenderStateDirty();
+	}
+}
+
+void UGaussianSplatComponent::OnAssetDataChanged(UGaussianSplatAsset* ChangedAsset)
+{
+	// Only respond if this is our asset
+	if (ChangedAsset == SplatAsset)
+	{
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Asset data changed (Nanite state), recreating scene proxy"));
+
+		// Invalidate cached bounds since splat count may have changed
+		bBoundsCached = false;
+		UpdateBounds();
+
+		// Recreate the scene proxy with updated asset data
+		// This will cause CreateSceneProxy to be called again with the new Nanite state
+		MarkRenderStateDirty();
+	}
+}
+
+void UGaussianSplatComponent::SubscribeToAssetChanges()
+{
+	if (SplatAsset && !AssetChangedDelegateHandle.IsValid())
+	{
+		AssetChangedDelegateHandle = SplatAsset->OnAssetChanged.AddUObject(this, &UGaussianSplatComponent::OnAssetDataChanged);
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Subscribed to asset change notifications"));
+	}
+}
+
+void UGaussianSplatComponent::UnsubscribeFromAssetChanges()
+{
+	if (SplatAsset && AssetChangedDelegateHandle.IsValid())
+	{
+		SplatAsset->OnAssetChanged.Remove(AssetChangedDelegateHandle);
+		AssetChangedDelegateHandle.Reset();
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Unsubscribed from asset change notifications"));
 	}
 }
