@@ -8,23 +8,6 @@
 - do a llama demo and add to github page
 
 
-Asset放大的時候會變超亮，應該是SH render有問題
-
-
-
-This is an Unreal Engine plugin I created which can imort and render gaussian splatting PLY file inside Unreal Engine "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting" .
-
-In Gaussian Splat Actor, there is a parameter called "SHOrder" under quality category.
-Is it really related to "Quality"?
-Does this number affect performance ?
-What is "SHOrder" doing?
-Looks like if I set it to 0, it will render base color only.
-So does it means it's rendering gaussian splat with 0 band, 1 band, 2 band and 3 bands?
-If I set it to 2, what does that mean?
-Base color + 1 band + 2 band?
-Or just 2nd band? 
-Is it adding on top or separated?
-
 
 ================================================================================
 SOURCE FILE BRIEF
