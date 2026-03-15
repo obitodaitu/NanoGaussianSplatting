@@ -38,7 +38,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 
 ## Settings
-(add image here)
+<img width="828" height="453" alt="Image" src="https://github.com/user-attachments/assets/d7314cbf-b0b9-4748-ad5f-ba87375fbfef" />
 
 | Category | Variable | Description |
 | :--- | :--- | :--- |
