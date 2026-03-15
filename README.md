@@ -37,9 +37,6 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 ## Settings
 
-
-
-
 Category | Variable | Description 
 --- | --- | --- 
 --- | 301 | 283 
