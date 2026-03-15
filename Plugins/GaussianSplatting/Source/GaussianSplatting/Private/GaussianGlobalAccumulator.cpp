@@ -30,7 +30,7 @@ void FGaussianGlobalAccumulator::ResizeIfNeeded(FRHICommandListBase& RHICmdList,
 	}
 	uint32 NewNumTiles = FMath::DivideAndRoundUp(NewAllocatedCount, 1024u);
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianGlobalAccumulator: Resizing from %u to %u splats (%u tiles)"),
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianGlobalAccumulator: Resizing from %u to %u splats (%u tiles)"),
 		AllocatedCount, NewAllocatedCount, NewNumTiles);
 
 	// Release old buffers before reallocation
@@ -186,7 +186,7 @@ void FGaussianGlobalAccumulator::EnsureCompactionBuffersAllocated(FRHICommandLis
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianGlobalAccumulator: Allocating compaction prefix-sum buffers (MaxProxies=%u)"), MAX_PROXY_COUNT);
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianGlobalAccumulator: Allocating compaction prefix-sum buffers (MaxProxies=%u)"), MAX_PROXY_COUNT);
 
 	const uint32 UintStride = sizeof(uint32);
 

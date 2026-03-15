@@ -380,7 +380,7 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 			SHBuffer, FRHIViewDesc::CreateBufferSRV()
 				.SetType(FRHIViewDesc::EBufferType::Raw));
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created SH buffer (%u bytes, bands=%d)"),
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created SH buffer (%u bytes, bands=%d)"),
 			SHDataSize, SHBands);
 	}
 
@@ -833,7 +833,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 
 		bSupportsIndirectDraw = true;
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created indirect draw buffer"));
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created indirect draw buffer"));
 	}
 
 	// Create splat-to-cluster index buffer
@@ -857,7 +857,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created splat-to-cluster index buffer for %d splats"), CachedSplatClusterIndices.Num());
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created splat-to-cluster index buffer for %d splats"), CachedSplatClusterIndices.Num());
 	}
 	CachedSplatClusterIndices.Empty();
 
@@ -884,7 +884,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster visibility bitmap (%d bytes for %d clusters)"), BitmapSize, ClusterCount);
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created cluster visibility bitmap (%d bytes for %d clusters)"), BitmapSize, ClusterCount);
 	}
 
 	// Create selected cluster buffer for Nanite-style debug visualization
@@ -910,7 +910,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created selected cluster buffer (%d bytes for %d leaf clusters)"), BufferSize, LeafClusterCount);
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created selected cluster buffer (%d bytes for %d leaf clusters)"), BufferSize, LeafClusterCount);
 	}
 
 	// Create LOD cluster tracking buffers for LOD rendering
@@ -1022,7 +1022,7 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created LOD cluster tracking buffers"));
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created LOD cluster tracking buffers"));
 
 	// Create splat compaction buffers (GPU-driven work reduction)
 	// CompactedSplatIndicesBuffer - stores visible splat indices
@@ -1130,9 +1130,8 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 	}
 
 	bSupportsCompaction = true;
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created splat compaction buffers for %d total splats"), TotalSplatCount);
-
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster buffers for %d clusters"), ClusterCount);
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created splat compaction buffers for %d total splats"), TotalSplatCount);
+	UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created cluster buffers for %d clusters"), ClusterCount);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1281,8 +1280,6 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 // registers itself with the ViewExtension
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateRenderThreadResources called! SplatCount=%d"), SplatCount);
-
 	if (CachedAsset && CachedAsset->IsValid())
 	{
 		GPUResources = new FGaussianSplatGPUResources();
@@ -1327,8 +1324,6 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 
 void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: DestroyRenderThreadResources called!"));
-
 	// CRITICAL: Mark as pending destruction FIRST, before any other operations.
 	// This prevents render commands that have already captured a pointer to this proxy
 	// from accessing our resources. The atomic flag is checked by IsValidForRendering().
