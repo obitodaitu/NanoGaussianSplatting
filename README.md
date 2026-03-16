@@ -5,12 +5,11 @@
 Supported Unreal Engine version: `UE5.6+`
 
 ## Overview
-Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
-Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
-However, currently there isn't any solution for handling high density/large scale gaussian splats.
+Loading large scale gaussian splatting files is always a big challenge.
+In order to render large scale gaussian splatting files in real-time, we will need to carefully handle VRAM, sorting millions of splats efficiently and drawing only the needed splats for the screen.
 
-This project primarily aims to solve this issue though dynamic streaming methods.
-
+The plugin leverages techniques such as Nanite-style LOD Clusters, Screen-Space Error LOD Selection, Splat Compaction, Global Accumulator and GPU Radix Sort.
+As a result users can render large scale gaussian splitting scenes efficiently.
 
 ## How To Use It
 - Place the plugin inside Unreal Engine project's "Plugins" folder
