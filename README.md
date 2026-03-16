@@ -13,7 +13,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 
 ## How To Use It
-- Place the plugin inside project's "Plugins" folder
+- Place the plugin inside Unreal Engine project's "Plugins" folder
 - Press import button to import PLY file. A Gaussian Splat Asset will be created
 
 ![Image](https://github.com/user-attachments/assets/2d784b1e-c2a1-4cb3-a891-2e80b84e6c28)
