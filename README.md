@@ -5,7 +5,7 @@
 Supported Unreal Engine version: `UE5.6+`
 
 ## Overview
-Loading large scale gaussian splatting files is always a big challenge.
+Rendering large scale gaussian splatting files is always a big challenge.
 In order to render large scale gaussian splatting files in real-time, we will need to carefully handle VRAM, sorting millions of splats efficiently and drawing only the needed splats for the screen.
 
 The plugin leverages techniques such as Nanite-style LOD Clusters, Screen-Space Error LOD Selection, Splat Compaction, Global Accumulator and GPU Radix Sort.
