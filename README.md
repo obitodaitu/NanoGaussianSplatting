@@ -2,7 +2,7 @@
 
 ![Image](https://github.com/user-attachments/assets/83ae3ba1-9414-4cb5-8703-19a15abddd21)
 
-Supported Unreal Engine version: UE5.6+
+Supported Unreal Engine version: `UE5.6+`
 
 ## Overview
 Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
