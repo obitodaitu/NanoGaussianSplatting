@@ -132,20 +132,30 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 	}
 
 	int32 DebugMode = CVarShowClusterBounds.GetValueOnRenderThread();
-	ERenderTargetLoadAction ColorLoadAction = (DebugMode > 0) ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
 
-	FRenderTargetParameters* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
-	PassParameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, ColorLoadAction);
+	// Create intermediate render target for sRGB-space alpha blending.
+	// Gaussian splatting trains in sRGB space, so blending must happen in sRGB space
+	// to produce correct colors. After compositing, we convert sRGB→linear for SceneColor.
+	FRDGTextureDesc IntermediateDesc = FRDGTextureDesc::Create2D(
+		ColorTexture->Desc.Extent,
+		PF_FloatRGBA,  // Need alpha channel for accumulation tracking
+		FClearValueBinding(FLinearColor::Transparent),
+		TexCreate_RenderTargetable | TexCreate_ShaderResource);
+	FRDGTexture* IntermediateTexture = GraphBuilder.CreateTexture(IntermediateDesc, TEXT("GaussianSplatIntermediateRT"));
+
+	// Pass 1: Render splats to intermediate RT (sRGB blending)
+	FRenderTargetParameters* Pass1Parameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
+	Pass1Parameters->RenderTargets[0] = FRenderTargetBinding(IntermediateTexture, ERenderTargetLoadAction::EClear);
 	// Bind velocity texture for TAA/TSR motion vector output
 	if (VelocityTexture)
 	{
-		PassParameters->RenderTargets[1] = FRenderTargetBinding(VelocityTexture, ERenderTargetLoadAction::ELoad);
+		Pass1Parameters->RenderTargets[1] = FRenderTargetBinding(VelocityTexture, ERenderTargetLoadAction::ELoad);
 	}
 	if (DepthTexture)
 	{
 		// Enable depth writes so TSR/TAA can properly detect disocclusion
 		// Splats will write their center depth for each rendered pixel
-		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(
+		Pass1Parameters->RenderTargets.DepthStencil = FDepthStencilBinding(
 			DepthTexture,
 			ERenderTargetLoadAction::ELoad,
 			ERenderTargetLoadAction::ELoad,
@@ -281,8 +291,8 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		}
 
 		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("GaussianSplatRendering_Global"),
-			PassParameters,
+			RDG_EVENT_NAME("GaussianSplat_RenderToIntermediate"),
+			Pass1Parameters,
 			ERDGPassFlags::Raster,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
 			 SharedIndexBuffer, CurrentVP, CurrentDebugMode,
@@ -578,6 +588,27 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 						RHICmdList, *SceneView, RawAccumulator,
 						SharedIndexBuffer, (int32)CappedTotalSplatCount, DebugMode);
 				}
+			}
+		);
+
+		// Pass 2: Composite intermediate sRGB RT onto SceneColor (sRGB → linear conversion)
+		ERenderTargetLoadAction CompositeColorLoadAction = (DebugMode > 0) ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
+		FRenderTargetParameters* Pass2Parameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
+		Pass2Parameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, CompositeColorLoadAction);
+
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("GaussianSplat_CompositeToSceneColor"),
+			Pass2Parameters,
+			ERDGPassFlags::Raster,
+			[SceneView, IntermediateTexture](FRHICommandListImmediate& RHICmdList)
+			{
+				if (!SceneView) return;
+
+				FRHITexture* IntermediateRHI = IntermediateTexture->GetRHI();
+				if (!IntermediateRHI) return;
+
+				FGaussianSplatRenderer::CompositeToSceneColor(
+					RHICmdList, *SceneView, IntermediateRHI);
 			}
 		);
 }

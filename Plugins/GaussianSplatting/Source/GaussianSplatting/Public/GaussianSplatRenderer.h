@@ -280,6 +280,18 @@ public:
 		int32 DebugMode
 	);
 
+	/**
+	 * Composite the intermediate sRGB-blended splat texture onto SceneColor.
+	 * Converts from sRGB to linear color space during compositing.
+	 * This ensures gaussian splat alpha blending happens in sRGB space
+	 * (matching 3DGS training) while still integrating with UE's linear pipeline.
+	 */
+	static void CompositeToSceneColor(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FTextureRHIRef IntermediateTexture
+	);
+
 private:
 	/** Calculate next power of 2 */
 	static uint32 NextPowerOfTwo(uint32 Value);

@@ -80,10 +80,11 @@ float3 HashToColor(uint id)
 	h *= 0x85ebca6b;
 	h ^= h >> 13;
 
-	// Generate HSV with high saturation for Nanite-style vivid colors
+	// Generate HSV with pastel colors similar to Nanite debug visualization
+	// Colors go through sRGB→linear composite (pow 2.2), so use higher brightness to compensate
 	float hue = float(h & 0xFFFF) / 65535.0;  // Full hue range
-	float sat = 0.6 + 0.4 * float((h >> 16) & 0xFF) / 255.0;  // 0.6-1.0 saturation
-	float val = 0.5 + 0.3 * float((h >> 24) & 0xFF) / 255.0;  // 0.5-0.8 value (not too bright)
+	float sat = 0.25 + 0.35 * float((h >> 16) & 0xFF) / 255.0;  // 0.25-0.60 saturation (pastel)
+	float val = 0.75 + 0.25 * float((h >> 24) & 0xFF) / 255.0;  // 0.75-1.0 value (bright)
 
 	return HSVToRGB(float3(hue, sat, val));
 }

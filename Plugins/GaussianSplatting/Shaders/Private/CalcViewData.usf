@@ -198,15 +198,17 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		// This produces sRGB color values (same as f_dc storage format)
 		shColor = 0.5 + shColor;
 
-		// Convert sRGB to linear for UE's linear SceneColor buffer
-		// This matches the non-SH path which also applies pow(x, 2.2)
-		finalColor = pow(max(shColor, 0.0), 2.2);
+		// Output sRGB values directly — do NOT convert to linear here.
+		// Alpha blending must happen in sRGB space to match 3DGS training.
+		// The sRGB→linear conversion is deferred to the composite pass
+		// (after all splats are blended in sRGB space).
+		finalColor = max(shColor, 0.0);
 	}
 	else
 	{
 		// DC-only rendering (use pre-computed color from packed buffer)
-		// Packed color stores sRGB values as uint8. Convert to linear for UE SceneColor.
-		finalColor = pow(max(colorOpacity.rgb, 0.0), 2.2);
+		// Output sRGB values directly — linear conversion deferred to composite pass.
+		finalColor = colorOpacity.rgb;
 	}
 
 	// Store view data

@@ -519,13 +519,14 @@ void FGaussianSplatRenderer::DrawSplats(
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
 
 	// Blend mode for MRT:
-	// RT0 (Color): Standard premultiplied alpha "over" for back-to-front compositing
-	//   result.rgb = src.rgb + dst.rgb * (1 - srcAlpha)
-	//   Using CW_RGB to preserve destination alpha for Movie Render Queue export.
+	// RT0 (Color): Premultiplied alpha "over" for back-to-front compositing in sRGB space
+	//   result = src + dst * (1 - srcAlpha)
+	//   Using CW_RGBA: splats render to intermediate sRGB RT which needs alpha tracking.
+	//   The composite pass later converts sRGB→linear and writes to SceneColor with CW_RGB.
 	// RT1 (Velocity): Simple replacement - velocity values should not be blended
 	GraphicsPSOInit.BlendState = TStaticBlendState<
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
-		CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
@@ -1145,10 +1146,11 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
-	// Blend mode for MRT: RT0 (Color) with alpha blend, RT1 (Velocity) with replacement
+	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
+	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
-		CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
@@ -1583,10 +1585,11 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
-	// Blend mode for MRT: RT0 (Color) with alpha blend, RT1 (Velocity) with replacement
+	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
+	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
-		CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
@@ -1867,4 +1870,55 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	// Return leaf cluster count as placeholder (actual count would require GPU readback)
 	// In a real implementation, you'd use the VisibleClusterBuffer in subsequent passes
 	return GPUResources->LeafClusterCount;
+}
+
+void FGaussianSplatRenderer::CompositeToSceneColor(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FTextureRHIRef IntermediateTexture)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatComposite);
+
+	TShaderMapRef<FGaussianSplatCompositeVS> VertexShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FGaussianSplatCompositePS> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!VertexShader.IsValid() || !PixelShader.IsValid())
+	{
+		return;
+	}
+
+	FGraphicsPipelineStateInitializer GraphicsPSOInit;
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+
+	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
+	// No depth testing for full-screen composite
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+	// Premultiplied alpha blend onto SceneColor
+	// CW_RGB preserves SceneColor alpha for Movie Render Queue export
+	GraphicsPSOInit.BlendState = TStaticBlendState<
+		CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha
+	>::GetRHI();
+	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+	FIntRect ViewRect = ViewInfo.ViewRect;
+	RHICmdList.SetViewport(
+		ViewRect.Min.X, ViewRect.Min.Y, 0.0f,
+		ViewRect.Max.X, ViewRect.Max.Y, 1.0f
+	);
+
+	// Set pixel shader parameters
+	FGaussianSplatCompositePS::FParameters PSParameters;
+	PSParameters.IntermediateTexture = IntermediateTexture;
+	PSParameters.IntermediateSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
+
+	// Draw full-screen triangle (3 vertices, no index buffer)
+	RHICmdList.SetStreamSource(0, nullptr, 0);
+	RHICmdList.DrawPrimitive(0, 1, 1);
 }

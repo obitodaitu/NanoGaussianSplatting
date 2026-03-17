@@ -223,6 +223,44 @@ class FGaussianSplatPS : public FGlobalShader
 };
 
 /**
+ * Vertex shader for the sRGB→linear composite pass (full-screen triangle)
+ */
+class FGaussianSplatCompositeVS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGaussianSplatCompositeVS);
+	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCompositeVS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+/**
+ * Pixel shader for the sRGB→linear composite pass
+ * Reads the intermediate sRGB-blended splat accumulation texture,
+ * converts to linear, and outputs for premultiplied alpha blending onto SceneColor.
+ */
+class FGaussianSplatCompositePS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGaussianSplatCompositePS);
+	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCompositePS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_TEXTURE(Texture2D, IntermediateTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, IntermediateSampler)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+/**
  * Radix sort - CountCS: per-tile histogram of 256 digit bins
  */
 class FRadixSortCountCS : public FGlobalShader

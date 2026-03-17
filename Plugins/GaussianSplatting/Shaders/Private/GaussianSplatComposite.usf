@@ -1,0 +1,56 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Composite pass: converts sRGB-blended gaussian splat accumulation to linear
+// for proper integration with UE's linear SceneColor buffer.
+//
+// Gaussian splatting trains and evaluates colors in sRGB space. Alpha blending
+// must happen in sRGB space to produce correct results. The splat rendering pass
+// writes sRGB premultiplied-alpha colors to an intermediate render target.
+// This composite pass un-premultiplies, converts sRGB→linear, re-premultiplies,
+// and blends the result onto SceneColor.
+
+#include "/Engine/Public/Platform.ush"
+
+Texture2D IntermediateTexture;
+SamplerState IntermediateSampler;
+
+struct FCompositeVSOutput
+{
+	float4 Position : SV_POSITION;
+};
+
+// Full-screen triangle: 3 vertices cover the entire screen
+FCompositeVSOutput MainVS(uint VertexId : SV_VertexID)
+{
+	FCompositeVSOutput Output;
+	float2 UV = float2((VertexId << 1) & 2, VertexId & 2);
+	Output.Position = float4(UV * 2.0 - 1.0, 0.0, 1.0);
+	return Output;
+}
+
+float4 MainPS(FCompositeVSOutput Input) : SV_Target0
+{
+	// Use SV_Position to load directly from intermediate RT (1:1 pixel mapping)
+	// This avoids UV scaling issues when ViewRect != full texture extent
+	int2 PixelPos = int2(Input.Position.xy);
+	float4 srgbAccum = IntermediateTexture.Load(int3(PixelPos, 0));
+
+	// Early out for fully transparent pixels (no splat contribution)
+	if (srgbAccum.a <= 0.0)
+	{
+		discard;
+	}
+
+	// Un-premultiply to recover the actual composited sRGB color
+	float3 srgbColor = srgbAccum.rgb / srgbAccum.a;
+
+	// Convert sRGB to linear for UE's SceneColor buffer
+	float3 linearColor = pow(max(srgbColor, 0.0), 2.2);
+
+	// Re-premultiply with accumulated alpha
+	float3 linearPremultiplied = linearColor * srgbAccum.a;
+
+	// Output: premultiplied linear color with accumulated alpha
+	// Blend state: result = src + dst * (1 - srcAlpha)
+	return float4(linearPremultiplied, srgbAccum.a);
+}

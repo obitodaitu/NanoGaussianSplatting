@@ -1,8 +1,10 @@
 
 [To Do list]
-- Demo - 野柳(FPV style) + llama + sky的ply + ocean
+- Demo - 野柳(FPV style) + sky的ply + ocean
 - add slicer.py to GitHub
 - release
+
+- 非full screen 會有clipping的問題
 
 
 
