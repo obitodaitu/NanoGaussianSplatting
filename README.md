@@ -18,7 +18,7 @@ As a result users can render large scale gaussian splitting scenes efficiently.
 ## How To Use It
 Video Tutorial
 
-[![Watch the video](https://img.youtube.com/vi/5nyo6cfvio0/0.jpg)](https://www.youtube.com/5nyo6cfvio0)
+[![Watch the video](https://img.youtube.com/vi/5nyo6cfvio0/0.jpg)](https://www.youtube.com/watch?v=5nyo6cfvio0)
 
 - Download the plugin from Releases page
 - Place the plugin inside Unreal Engine project's "Plugins" folder
