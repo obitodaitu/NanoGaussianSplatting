@@ -16,6 +16,7 @@ The plugin leverages techniques such as Nanite-style LOD Clusters, Screen-Space 
 As a result users can render large scale gaussian splitting scenes efficiently.
 
 ## How To Use It
+- Download the plugin from Releases page
 - Place the plugin inside Unreal Engine project's "Plugins" folder
 - Press import button to import PLY file. A Gaussian Splat Asset will be created
 
