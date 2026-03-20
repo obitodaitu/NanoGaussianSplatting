@@ -61,4 +61,4 @@ The splats outside the camera view can not be culled.
 Also, all the splats will be engaged in the sorting process all the time.
 
 The ideal format is slicing a big chunk of gaussian splatting file into smaller pieces.
-For example individual props for cinematic scenes or tiles for geo-spatial data.
+For example individual props for cinematic scenes or tiles for geo-spatial data (this repo includes a simple python tile slicer).
