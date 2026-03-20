@@ -5,7 +5,7 @@
 > [!NOTE]
 > Source code will be released soon!
 
-Supported Unreal Engine version: `UE5.6+`
+Supported Unreal Engine version: `UE5.6` `UE5.7`
 
 
 ## Overview
