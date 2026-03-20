@@ -1,12 +1,13 @@
 ### Unreal ###
 Saved/
 Content/
+Config/
 DerivedDataCache/
 .vs/
 Intermediate/
 .vsconfig
 UnityGaussianSplatting/
-
+GSTest.uproject
 
 ### claude ###
 .claude/
