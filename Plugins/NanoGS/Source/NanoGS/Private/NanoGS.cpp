@@ -81,14 +81,6 @@ void FNanoGSModule::StartupModule()
 	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("NanoGS"))->GetBaseDir(), TEXT("Shaders"));
 	AddShaderSourceDirectoryMapping(TEXT("/Plugin/NanoGS"), PluginShaderDir);
 
-	// Create and register the view extension for Gaussian Splat rendering
-	ViewExtension = FSceneViewExtensions::NewExtension<FGaussianSplatViewExtension>();
-
-	if (!ViewExtension.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("GaussianSplatting: Failed to create ViewExtension!"));
-	}
-
 	// Allocate the global accumulator (buffers are created lazily on first render)
 	GlobalAccumulator = MakeUnique<FGaussianGlobalAccumulator>();
 
@@ -96,7 +88,26 @@ void FNanoGSModule::StartupModule()
 	PostOpaqueRenderDelegateHandle = GetRendererModuleRef().RegisterPostOpaqueRenderDelegate(
 		FPostOpaqueRenderDelegate::CreateRaw(this, &FNanoGSModule::OnPostOpaqueRender_RenderThread));
 
+	// Defer view extension creation until GEngine is valid
+	// (StartupModule runs before GEngine is initialized, causing an ensure failure)
+	PostEngineInitDelegateHandle = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FNanoGSModule::OnPostEngineInit);
+
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatting module started. Shader directory: %s"), *PluginShaderDir);
+}
+
+void FNanoGSModule::OnPostEngineInit()
+{
+	// Now GEngine is valid — safe to create the view extension
+	ViewExtension = FSceneViewExtensions::NewExtension<FGaussianSplatViewExtension>();
+
+	if (!ViewExtension.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("GaussianSplatting: Failed to create ViewExtension!"));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatting: ViewExtension created successfully (deferred init)"));
+	}
 }
 
 void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters)
@@ -628,6 +639,13 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 void FNanoGSModule::ShutdownModule()
 {
+	// Remove deferred init delegate
+	if (PostEngineInitDelegateHandle.IsValid())
+	{
+		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitDelegateHandle);
+		PostEngineInitDelegateHandle.Reset();
+	}
+
 	// Unregister post-opaque render delegate
 	if (PostOpaqueRenderDelegateHandle.IsValid())
 	{

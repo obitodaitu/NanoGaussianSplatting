@@ -103,6 +103,23 @@ struct NANOGS_API FGaussianGlobalAccumulator
 	FMatrix CachedViewProjectionMatrix = FMatrix::Identity;
 
 	//----------------------------------------------------------------------
+	// Previous frame data for velocity calculation (per-view)
+	// (UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks,
+	// so we track previous frame matrices ourselves, keyed by view identity
+	// to handle multiple simultaneous viewports correctly)
+	//----------------------------------------------------------------------
+
+	struct FPrevFrameViewData
+	{
+		FMatrix TranslatedViewProjectionMatrix = FMatrix::Identity;
+		FVector PreViewTranslation = FVector::ZeroVector;
+		FVector2D TemporalAAJitter = FVector2D::ZeroVector;
+	};
+
+	/** Per-view previous frame data, keyed by FSceneViewState pointer */
+	TMap<const void*, FPrevFrameViewData> PrevFrameDataPerView;
+
+	//----------------------------------------------------------------------
 	// Interface
 	//----------------------------------------------------------------------
 

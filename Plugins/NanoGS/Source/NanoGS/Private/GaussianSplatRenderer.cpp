@@ -22,6 +22,60 @@
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
+// Helper: Set pixel shader velocity parameters using self-tracked previous frame data.
+// UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks, so we store
+// current frame matrices and use them as "previous" data next frame.
+// Data is tracked per-view (keyed by FSceneViewState*) to handle multiple viewports
+// (e.g., main editor viewport + camera preview) without cross-contamination.
+static void SetVelocityPSParameters(
+	FGaussianSplatPS::FParameters& PSParameters,
+	const FSceneView& View,
+	FGaussianGlobalAccumulator* Accumulator)
+{
+	// Current frame data
+	FMatrix CurTranslatedVP = View.ViewMatrices.GetTranslatedViewProjectionMatrix();
+	FVector CurPreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
+	FVector2D CurJitter = View.ViewMatrices.GetTemporalAAJitter();
+
+	// Use View.State as per-view key (unique per persistent viewport)
+	const void* ViewKey = View.State;
+
+	// Look up previous frame data for this specific view
+	FGaussianGlobalAccumulator::FPrevFrameViewData* PrevData = nullptr;
+	if (Accumulator && ViewKey)
+	{
+		PrevData = Accumulator->PrevFrameDataPerView.Find(ViewKey);
+	}
+
+	if (PrevData)
+	{
+		PSParameters.PrevTranslatedWorldToClip = FMatrix44f(PrevData->TranslatedViewProjectionMatrix);
+		PSParameters.PrevPreViewTranslation = FVector3f(PrevData->PreViewTranslation);
+		PSParameters.TemporalAAJitter = FVector4f(
+			CurJitter.X, CurJitter.Y,
+			PrevData->TemporalAAJitter.X,
+			PrevData->TemporalAAJitter.Y);
+	}
+	else
+	{
+		// First frame for this view: use current frame data (produces zero velocity)
+		PSParameters.PrevTranslatedWorldToClip = FMatrix44f(CurTranslatedVP);
+		PSParameters.PrevPreViewTranslation = FVector3f(CurPreViewTranslation);
+		PSParameters.TemporalAAJitter = FVector4f(CurJitter.X, CurJitter.Y, CurJitter.X, CurJitter.Y);
+	}
+
+	PSParameters.PreViewTranslation = FVector3f(CurPreViewTranslation);
+
+	// Store current frame data for next frame
+	if (Accumulator && ViewKey)
+	{
+		FGaussianGlobalAccumulator::FPrevFrameViewData& Data = Accumulator->PrevFrameDataPerView.FindOrAdd(ViewKey);
+		Data.TranslatedViewProjectionMatrix = CurTranslatedVP;
+		Data.PreViewTranslation = CurPreViewTranslation;
+		Data.TemporalAAJitter = CurJitter;
+	}
+}
+
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
 }
@@ -565,21 +619,7 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	// Pixel shader parameters
 	FGaussianSplatPS::FParameters PSParameters;
-	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
-	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
-	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
-	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
-	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
-	PSParameters.TemporalAAJitter = FVector4f(
-		View.ViewMatrices.GetTemporalAAJitter().X,
-		View.ViewMatrices.GetTemporalAAJitter().Y,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
-	);
-	// PreViewTranslation for converting TranslatedWorld back to World
-	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	// Previous frame's PreViewTranslation for correct velocity calculation
-	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
+	SetVelocityPSParameters(PSParameters, View, nullptr);
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	// Draw instanced quads
@@ -1178,21 +1218,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
 	FGaussianSplatPS::FParameters PSParameters;
-	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
-	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
-	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
-	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
-	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
-	PSParameters.TemporalAAJitter = FVector4f(
-		View.ViewMatrices.GetTemporalAAJitter().X,
-		View.ViewMatrices.GetTemporalAAJitter().Y,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
-	);
-	// PreViewTranslation for converting TranslatedWorld back to World
-	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	// Previous frame's PreViewTranslation for correct velocity calculation
-	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
+	SetVelocityPSParameters(PSParameters, View, GlobalAccumulator);
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	RHICmdList.SetStreamSource(0, nullptr, 0);
@@ -1619,21 +1645,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
 	FGaussianSplatPS::FParameters PSParameters;
-	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
-	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
-	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
-	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
-	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
-	PSParameters.TemporalAAJitter = FVector4f(
-		View.ViewMatrices.GetTemporalAAJitter().X,
-		View.ViewMatrices.GetTemporalAAJitter().Y,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
-		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
-	);
-	// PreViewTranslation for converting TranslatedWorld back to World
-	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	// Previous frame's PreViewTranslation for correct velocity calculation
-	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
+	SetVelocityPSParameters(PSParameters, View, GlobalAccumulator);
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	RHICmdList.SetStreamSource(0, nullptr, 0);

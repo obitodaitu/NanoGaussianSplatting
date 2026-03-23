@@ -39,6 +39,12 @@ private:
 	/** Post opaque render delegate handle */
 	FDelegateHandle PostOpaqueRenderDelegateHandle;
 
+	/** Delegate handle for deferred initialization after engine is ready */
+	FDelegateHandle PostEngineInitDelegateHandle;
+
+	/** Deferred initialization: create view extension after GEngine is valid */
+	void OnPostEngineInit();
+
 	/** Global GPU accumulator for one-draw-call path (render-thread owned) */
 	TUniquePtr<FGaussianGlobalAccumulator> GlobalAccumulator;
 

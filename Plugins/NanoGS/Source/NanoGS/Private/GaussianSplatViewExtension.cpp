@@ -83,6 +83,5 @@ void FGaussianSplatViewExtension::PostRenderBasePassDeferred_RenderThread(FRDGBu
 
 void FGaussianSplatViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessingInputs& Inputs)
 {
-	// Rendering is done in OnPostOpaqueRender delegate instead
 }
 

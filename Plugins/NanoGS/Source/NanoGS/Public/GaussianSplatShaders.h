@@ -206,8 +206,6 @@ class FGaussianSplatPS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		// Velocity calculation (Nanite-style): transform translated world position to previous clip space
 		SHADER_PARAMETER(FMatrix44f, PrevTranslatedWorldToClip)
-		// Screen size inverse for NDC conversion (avoids View uniform buffer dependency)
-		SHADER_PARAMETER(FVector2f, ScreenSizeInverse)
 		// TAA jitter: xy = current frame jitter, zw = previous frame jitter (in NDC space)
 		SHADER_PARAMETER(FVector4f, TemporalAAJitter)
 		// PreViewTranslation for converting TranslatedWorld back to World
