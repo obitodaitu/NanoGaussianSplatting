@@ -177,7 +177,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 			DepthTexture,
 			ERenderTargetLoadAction::ELoad,
 			ERenderTargetLoadAction::ELoad,
-			FExclusiveDepthStencil::DepthWrite_StencilRead
+			FExclusiveDepthStencil::DepthWrite_StencilWrite
 		);
 	}
 

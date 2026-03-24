@@ -569,7 +569,14 @@ void FGaussianSplatRenderer::DrawSplats(
 	// Depth write disabled (false) because splats are transparent and blend among themselves
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
+	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
+	// reduces temporal history weight for splat pixels, preventing ghost trails
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
+		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
+		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
+		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+	>::GetRHI();
 
 	// Blend mode for MRT:
 	// RT0 (Color): Premultiplied alpha "over" for back-to-front compositing in sRGB space
@@ -589,7 +596,7 @@ void FGaussianSplatRenderer::DrawSplats(
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0x08);
 
 	// Set viewport using FViewInfo::ViewRect which accounts for screen percentage
 	// This matches the actual render target dimensions
@@ -1188,7 +1195,14 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
+	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
+	// reduces temporal history weight for splat pixels, preventing ghost trails
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
+		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
+		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
+		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+	>::GetRHI();
 	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
@@ -1202,7 +1216,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0x08);
 
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 	FIntRect ViewRect = ViewInfo.ViewRect;
@@ -1615,7 +1629,14 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
+	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
+	// reduces temporal history weight for splat pixels, preventing ghost trails
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
+		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
+		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
+		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+	>::GetRHI();
 	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
@@ -1629,7 +1650,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI  = PixelShader.GetPixelShader();
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0x08);
 
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 	FIntRect ViewRect = ViewInfo.ViewRect;
