@@ -183,10 +183,6 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		// Negate to convert from splat->camera to camera->splat direction (SH training convention)
 		viewDirPLY = -viewDirPLY;
 
-		// Compensate for position transform having negated Y axis (UE.Z = -PLY.Y)
-		// The SH coefficients expect the original PLY orientation, but our Y is flipped
-		viewDirPLY.y = -viewDirPLY.y;
-
 		// Renormalize: LocalToWorld may contain scale, which denormalizes viewDirLocal.
 		// SH basis functions require a unit direction vector.
 		viewDirPLY = normalize(viewDirPLY);
