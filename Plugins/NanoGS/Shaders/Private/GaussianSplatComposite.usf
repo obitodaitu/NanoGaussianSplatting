@@ -14,6 +14,29 @@
 Texture2D IntermediateTexture;
 SamplerState IntermediateSampler;
 
+// Attempt to invert UE's ACES filmic tone curve so that display-ready gaussian
+// splat colors survive tone mapping unchanged.  Uses the Narkowicz ACES fit
+// (same curve UE's default tone mapper approximates) and solves the quadratic
+// analytically.  Without this, already-display-ready sRGB colours appear
+// over-saturated after the engine applies its S-curve.
+float3 InverseACESTonemap(float3 color)
+{
+	// Narkowicz ACES fit: y = clamp((x*(a*x+b)) / (x*(c*x+d)+e))
+	float a = 2.51;
+	float b = 0.03;
+	float c = 2.43;
+	float d = 0.59;
+	float e = 0.14;
+
+	// Solve (a - y*c)*t^2 + (b - y*d)*t - y*e = 0  for t (pre-tonemap value)
+	color = clamp(color, 0.0, 0.99);  // avoid singularities near 1.0
+	float3 A = a - color * c;
+	float3 B = b - color * d;
+	float3 C = -color * e;
+
+	return (-B + sqrt(max(B * B - 4.0 * A * C, 0.0))) / (2.0 * A);
+}
+
 struct FCompositeVSOutput
 {
 	float4 Position : SV_POSITION;
@@ -46,6 +69,11 @@ float4 MainPS(FCompositeVSOutput Input) : SV_Target0
 
 	// Convert sRGB to linear for UE's SceneColor buffer
 	float3 linearColor = pow(max(srgbColor, 0.0), 2.2);
+
+	// Apply inverse ACES tone curve so that UE's tone mapper maps us back to
+	// the intended display color.  Without this, the ACES S-curve boosts
+	// saturation and contrast of our already-display-ready splat colours.
+	linearColor = InverseACESTonemap(linearColor);
 
 	// Re-premultiply with accumulated alpha
 	float3 linearPremultiplied = linearColor * srgbAccum.a;
