@@ -12,5 +12,12 @@ UnityGaussianSplatting/
 GSTest.uproject
 GSTest.sln
 
+# Plugin build artifacts at any depth
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
+# Debug symbols should never be tracked
+*.pdb
+
 ### claude ###
 .claude/
