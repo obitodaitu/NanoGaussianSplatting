@@ -68,12 +68,14 @@ public:
 
 	/**
 	 * Draw the Gaussian splats
+	 * @param VelocityAccumulator Per-proxy accumulator for motion vector output (may be nullptr)
 	 */
 	static void DrawSplats(
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		FGaussianSplatGPUResources* GPUResources,
-		int32 SplatCount
+		int32 SplatCount,
+		FGaussianGlobalAccumulator* VelocityAccumulator = nullptr
 	);
 
 	/**

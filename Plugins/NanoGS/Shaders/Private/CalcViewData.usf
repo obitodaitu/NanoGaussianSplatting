@@ -122,7 +122,8 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Calculate covariance
 	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
 	float3x3 localToWorldRot = (float3x3)LocalToWorld;
-	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+	// Correct formula: R * Σ * R^T (HLSL row-major: mul(R, mul(Σ, transpose(R))))
+	float3x3 cov3D_world = mul(localToWorldRot, mul(cov3D_local, transpose(localToWorldRot)));
 	float3x3 viewMat = (float3x3)WorldToView;
 	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
 

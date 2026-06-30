@@ -544,9 +544,17 @@ void UGaussianSplatAsset::GetPositionData(TArray<uint8>& OutData) const
 	const int64 DataSize = PositionBulkData.GetBulkDataSize();
 	if (DataSize > 0)
 	{
-		OutData.SetNum(static_cast<int32>(DataSize));
 		const void* SrcData = PositionBulkData.LockReadOnly();
-		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		if (SrcData)
+		{
+			OutData.SetNum(static_cast<int32>(DataSize));
+			FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GetPositionData: BulkData not resident for asset '%s'"), *GetName());
+			OutData.Empty();
+		}
 		PositionBulkData.Unlock();
 	}
 	else
@@ -560,9 +568,17 @@ void UGaussianSplatAsset::GetOtherData(TArray<uint8>& OutData) const
 	const int64 DataSize = OtherBulkData.GetBulkDataSize();
 	if (DataSize > 0)
 	{
-		OutData.SetNum(static_cast<int32>(DataSize));
 		const void* SrcData = OtherBulkData.LockReadOnly();
-		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		if (SrcData)
+		{
+			OutData.SetNum(static_cast<int32>(DataSize));
+			FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GetOtherData: BulkData not resident for asset '%s'"), *GetName());
+			OutData.Empty();
+		}
 		OtherBulkData.Unlock();
 	}
 	else
@@ -576,9 +592,17 @@ void UGaussianSplatAsset::GetSHData(TArray<uint8>& OutData) const
 	const int64 DataSize = SHBulkData.GetBulkDataSize();
 	if (DataSize > 0)
 	{
-		OutData.SetNum(static_cast<int32>(DataSize));
 		const void* SrcData = SHBulkData.LockReadOnly();
-		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		if (SrcData)
+		{
+			OutData.SetNum(static_cast<int32>(DataSize));
+			FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GetSHData: BulkData not resident for asset '%s'"), *GetName());
+			OutData.Empty();
+		}
 		SHBulkData.Unlock();
 	}
 	else
@@ -592,9 +616,17 @@ void UGaussianSplatAsset::GetColorTextureData(TArray<uint8>& OutData) const
 	const int64 DataSize = ColorTextureBulkData.GetBulkDataSize();
 	if (DataSize > 0)
 	{
-		OutData.SetNum(static_cast<int32>(DataSize));
 		const void* SrcData = ColorTextureBulkData.LockReadOnly();
-		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		if (SrcData)
+		{
+			OutData.SetNum(static_cast<int32>(DataSize));
+			FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GetColorTextureData: BulkData not resident for asset '%s'"), *GetName());
+			OutData.Empty();
+		}
 		ColorTextureBulkData.Unlock();
 	}
 	else

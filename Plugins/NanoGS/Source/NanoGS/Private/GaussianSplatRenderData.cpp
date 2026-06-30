@@ -335,7 +335,16 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 		SharedBufferCount++;
 	}
 
-	// Free CPU-side cached data after GPU upload
+	// Verify all critical buffers were created before discarding CPU data.
+	// CreateBuffer can silently return null on OOM or device-lost; if any required
+	// buffer is missing we cannot render, so keep CPU data intact for a potential retry.
+	if (!PackedSplatBuffer.IsValid() || !SHBuffer.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("GaussianSplatRenderData: One or more GPU buffers failed to allocate for '%s'. Keeping CPU data."), *AssetName);
+		return;
+	}
+
+	// Free CPU-side cached data after successful GPU upload
 	PackedSplatData.Empty();
 	SHData.Empty();
 	CachedChunkData.Empty();

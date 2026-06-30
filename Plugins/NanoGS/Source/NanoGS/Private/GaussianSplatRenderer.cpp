@@ -536,7 +536,8 @@ void FGaussianSplatRenderer::DrawSplats(
 	FRHICommandListImmediate& RHICmdList,
 	const FSceneView& View,
 	FGaussianSplatGPUResources* GPUResources,
-	int32 SplatCount)
+	int32 SplatCount,
+	FGaussianGlobalAccumulator* VelocityAccumulator)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatDraw);
 
@@ -625,7 +626,7 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	// Pixel shader parameters
 	FGaussianSplatPS::FParameters PSParameters;
-	SetVelocityPSParameters(PSParameters, View, nullptr);
+	SetVelocityPSParameters(PSParameters, View, VelocityAccumulator);
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	// Draw instanced quads
@@ -683,7 +684,10 @@ void FGaussianSplatRenderer::DispatchCompactSplats(
 		return;
 	}
 
-	// Reset visible splat count to 0
+	// Reset visible splat count to 0.
+	// Transition to CopySrc (CPU-writable staging state) before locking, then
+	// immediately transition back so the subsequent UAVCompute transition is coherent.
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
 	uint32 Zero = 0;
 	void* Data = RHICmdList.LockBuffer(GPUResources->VisibleSplatCountBuffer, 0, sizeof(uint32), RLM_WriteOnly);
 	FMemory::Memcpy(Data, &Zero, sizeof(uint32));
@@ -911,8 +915,11 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 		return;
 	}
 
-	// Transition global buffer to UAV for writing (Unknown covers both first-proxy and subsequent calls)
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	// Transition global buffer: first proxy uses Unknown (buffer may be fresh or from prior frame);
+	// subsequent proxies must use UAVCompute→UAVCompute to insert the required execution barrier
+	// so proxy N's writes are visible before proxy N+1 reads the same buffer region.
+	ERHIAccess SrcAccess = (GlobalBaseOffset == 0) ? ERHIAccess::Unknown : ERHIAccess::UAVCompute;
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, SrcAccess, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
@@ -1363,7 +1370,8 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	}
 
 	// Transition global ViewData buffer to UAV (Unknown handles first proxy and subsequent proxies)
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	ERHIAccess CompactedSrcAccess = (ProxyIndex == 0) ? ERHIAccess::Unknown : ERHIAccess::UAVCompute;
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, CompactedSrcAccess, ERHIAccess::UAVCompute));
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;

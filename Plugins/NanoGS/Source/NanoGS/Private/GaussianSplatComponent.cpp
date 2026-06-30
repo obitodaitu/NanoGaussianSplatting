@@ -86,6 +86,19 @@ FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 		}
 	}
 
+	// Ensure ColorTexture RHI resource exists before the render thread touches it.
+	// UpdateResource() is game-thread-only; calling it here avoids the thread-safety
+	// violation that would occur inside CreateRenderThreadResources.
+	if (SplatAsset->ColorTexture)
+	{
+		FTexturePlatformData* PlatformData = SplatAsset->ColorTexture->GetPlatformData();
+		if (!SplatAsset->ColorTexture->GetResource() && PlatformData && PlatformData->Mips.Num() > 0
+			&& PlatformData->Mips[0].BulkData.GetBulkDataSize() > 0)
+		{
+			SplatAsset->ColorTexture->UpdateResource();
+		}
+	}
+
 	return new FGaussianSplatSceneProxy(this);
 }
 

@@ -6,6 +6,7 @@
 #include "PrimitiveSceneProxy.h"
 #include "GaussianDataTypes.h"
 #include "GaussianClusterTypes.h"
+#include "GaussianGlobalAccumulator.h"
 #include "RenderResource.h"
 #include "RHI.h"
 #include "RHIResources.h"
@@ -332,6 +333,10 @@ public:
 	int32 CachedDebugMode = -1;
 	int32 CachedDebugForceLODLevel = -1;
 	bool bHasCachedSortData = false;
+
+	/** Per-proxy velocity accumulator for the non-global (single-proxy) render path.
+	 *  Stores previous frame VP matrices per view so DrawSplats can output correct motion vectors. */
+	FGaussianGlobalAccumulator VelocityAccumulator;
 };
 
 /**

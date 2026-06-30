@@ -839,7 +839,8 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 
 			if (!TextureResource && PlatformData && BulkDataSize > 0)
 			{
-				CachedAsset->ColorTexture->UpdateResource();
+				// UpdateResource() must be called on the game thread (done in CreateSceneProxy).
+				// By the time we reach here the resource should already exist; if not, skip.
 				TextureResource = CachedAsset->ColorTexture->GetResource();
 			}
 
@@ -924,7 +925,8 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 
 		if (PlatformData && BulkDataSize > 0)
 		{
-			CachedAsset->ColorTexture->UpdateResource();
+			// UpdateResource() is game-thread-only; it is called in CreateSceneProxy before
+			// this render-thread function runs, so the resource should exist by now.
 			TextureResource = CachedAsset->ColorTexture->GetResource();
 		}
 	}
