@@ -30,3 +30,6 @@ IMPLEMENT_GLOBAL_SHADER(FPrepareIndirectArgsCS, "/Plugin/NanoGS/Private/PrepareI
 // Global accumulator + compaction prefix-sum shaders
 IMPLEMENT_GLOBAL_SHADER(FGatherVisibleCountsCS,     "/Plugin/NanoGS/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPrefixSumVisibleCountsCS,  "/Plugin/NanoGS/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);
+
+// GPU reset: replaces CPU LockBuffer stall for VisibleSplatCount reset
+IMPLEMENT_GLOBAL_SHADER(FResetVisibleSplatCountCS, "/Plugin/NanoGS/Private/ResetVisibleSplatCount.usf", "ResetCS", SF_Compute);

@@ -21,6 +21,7 @@
 // Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
+extern TAutoConsoleVariable<float> CVarGlobalLODBias;
 
 // Helper: Set pixel shader velocity parameters using self-tracked previous frame data.
 // UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks, so we store
@@ -293,12 +294,16 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 	};
 
 	// Ensure alt buffers are in UAVCompute state
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	// SortParamsBuffer is bound as SRV (unused when UseIndirectSort=0, but needs valid state)
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	{
+		FRHITransitionInfo InitTransitions[] = {
+			FRHITransitionInfo(GPUResources->SortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->SortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute),
+		};
+		RHICmdList.Transition(MakeArrayView(InitTransitions, UE_ARRAY_COUNT(InitTransitions)));
+	}
 
 	// 4 radix passes: bits 0-7, 8-15, 16-23, 24-31
 	for (uint32 Pass = 0; Pass < 4; Pass++)
@@ -324,7 +329,7 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			UnsetShaderUAVs(RHICmdList, CountShader, CountShader.GetComputeShader());
 		}
 
-		// UAV barrier
+		// Histogram written; PrefixSum needs to read it
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 		// --- PrefixSumCS: exclusive prefix sum per digit across tiles ---
@@ -342,7 +347,7 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			UnsetShaderUAVs(RHICmdList, PrefixSumShader, PrefixSumShader.GetComputeShader());
 		}
 
-		// UAV barrier
+		// DigitOffset written; DigitPrefixSum needs to read it
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 		// --- DigitPrefixSumCS: exclusive prefix sum across digit totals ---
@@ -356,9 +361,14 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			UnsetShaderUAVs(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader());
 		}
 
-		// UAV barrier
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: DigitOffset + Histogram both needed by ScatterCS
+		{
+			FRHITransitionInfo ScatterBarriers[] = {
+				FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(GPUResources->RadixHistogramBuffer,   ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(ScatterBarriers, UE_ARRAY_COUNT(ScatterBarriers)));
+		}
 
 		// --- ScatterCS: scatter keys+values to sorted positions ---
 		{
@@ -381,9 +391,14 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
 		}
 
-		// UAV barriers between passes
-		RHICmdList.Transition(FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(KeyBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: Dst key/value buffers needed by next pass CountCS
+		{
+			FRHITransitionInfo PassBarriers[] = {
+				FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(KeyBuffers[DstIdx],  ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(PassBarriers, UE_ARRAY_COUNT(PassBarriers)));
+		}
 	}
 
 	// After 4 passes (even count), result is back in primary buffers [0]
@@ -430,10 +445,15 @@ void FGaussianSplatRenderer::DispatchRadixSortIndirect(
 	};
 
 	// Ensure alt buffers are in UAVCompute state
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	{
+		FRHITransitionInfo InitTransitions[] = {
+			FRHITransitionInfo(GPUResources->SortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->SortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+		};
+		RHICmdList.Transition(MakeArrayView(InitTransitions, UE_ARRAY_COUNT(InitTransitions)));
+	}
 
 	// SortIndirectArgsBuffer should already be in IndirectArgs state from DispatchPrepareIndirectArgs
 	// SortParamsBuffer should already be in SRVCompute state from DispatchPrepareIndirectArgs
@@ -462,7 +482,7 @@ void FGaussianSplatRenderer::DispatchRadixSortIndirect(
 			UnsetShaderUAVs(RHICmdList, CountShader, CountShader.GetComputeShader());
 		}
 
-		// UAV barrier
+		// Histogram written; PrefixSum needs to read it
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 		// --- PrefixSumCS: exclusive prefix sum per digit across tiles ---
@@ -482,7 +502,7 @@ void FGaussianSplatRenderer::DispatchRadixSortIndirect(
 			UnsetShaderUAVs(RHICmdList, PrefixSumShader, PrefixSumShader.GetComputeShader());
 		}
 
-		// UAV barrier
+		// DigitOffset written; DigitPrefixSum needs to read it
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 		// --- DigitPrefixSumCS: exclusive prefix sum across digit totals ---
@@ -497,9 +517,14 @@ void FGaussianSplatRenderer::DispatchRadixSortIndirect(
 			UnsetShaderUAVs(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader());
 		}
 
-		// UAV barrier
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->RadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: DigitOffset + Histogram both needed by ScatterCS
+		{
+			FRHITransitionInfo ScatterBarriers[] = {
+				FRHITransitionInfo(GPUResources->RadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(GPUResources->RadixHistogramBuffer,   ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(ScatterBarriers, UE_ARRAY_COUNT(ScatterBarriers)));
+		}
 
 		// --- ScatterCS: scatter keys+values to sorted positions (INDIRECT DISPATCH) ---
 		{
@@ -522,9 +547,14 @@ void FGaussianSplatRenderer::DispatchRadixSortIndirect(
 			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
 		}
 
-		// UAV barriers between passes
-		RHICmdList.Transition(FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(KeyBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: Dst key/value buffers needed by next pass CountCS
+		{
+			FRHITransitionInfo PassBarriers[] = {
+				FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(KeyBuffers[DstIdx],  ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(PassBarriers, UE_ARRAY_COUNT(PassBarriers)));
+		}
 	}
 
 	// After 4 passes (even count), result is back in primary buffers [0]
@@ -684,18 +714,26 @@ void FGaussianSplatRenderer::DispatchCompactSplats(
 		return;
 	}
 
-	// Reset visible splat count to 0.
-	// Transition to CopySrc (CPU-writable staging state) before locking, then
-	// immediately transition back so the subsequent UAVCompute transition is coherent.
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
-	uint32 Zero = 0;
-	void* Data = RHICmdList.LockBuffer(GPUResources->VisibleSplatCountBuffer, 0, sizeof(uint32), RLM_WriteOnly);
-	FMemory::Memcpy(Data, &Zero, sizeof(uint32));
-	RHICmdList.UnlockBuffer(GPUResources->VisibleSplatCountBuffer);
+	// Reset visible splat count to 0 using a GPU compute shader.
+	// Previously used LockBuffer (CPU stall) — this avoids the GPU pipeline flush.
+	{
+		TShaderMapRef<FResetVisibleSplatCountCS> ResetShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		if (ResetShader.IsValid())
+		{
+			RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+			FResetVisibleSplatCountCS::FParameters ResetParams;
+			ResetParams.VisibleSplatCount = GPUResources->VisibleSplatCountBufferUAV;
+			SetComputePipelineState(RHICmdList, ResetShader.GetComputeShader());
+			SetShaderParameters(RHICmdList, ResetShader, ResetShader.GetComputeShader(), ResetParams);
+			RHICmdList.DispatchComputeShader(1, 1, 1);
+			UnsetShaderUAVs(RHICmdList, ResetShader, ResetShader.GetComputeShader());
+			// UAV barrier: ensure reset completes before CompactSplats reads/writes the counter
+			RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleSplatCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		}
+	}
 
-	// Transition buffers
+	// Transition CompactedSplatIndices for compute write
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->CompactedSplatIndicesBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleSplatCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	FCompactSplatsCS::FParameters Parameters;
 	Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
@@ -1079,11 +1117,11 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobal(
 		GlobalAccumulator->GlobalSortKeysBufferAlt
 	};
 
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortDistanceBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortKeysBufferAlt, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortDistanceBufferAlt,  ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortKeysBufferAlt,      ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortParamsBuffer,       ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 
 	for (uint32 Pass = 0; Pass < 4; Pass++)
 	{
@@ -1138,8 +1176,14 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobal(
 			UnsetShaderUAVs(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader());
 		}
 
-		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: DigitOffset + Histogram both needed by ScatterCS
+		{
+			FRHITransitionInfo ScatterBarriers[] = {
+				FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(ScatterBarriers, UE_ARRAY_COUNT(ScatterBarriers)));
+		}
 
 		// ScatterCS
 		{
@@ -1162,8 +1206,14 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobal(
 			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
 		}
 
-		RHICmdList.Transition(FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(KeyBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: Dst key/value buffers needed by next pass CountCS
+		{
+			FRHITransitionInfo PassBarriers[] = {
+				FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(KeyBuffers[DstIdx],  ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(PassBarriers, UE_ARRAY_COUNT(PassBarriers)));
+		}
 	}
 
 	// After 4 passes (even), result is in primary buffers [0]
@@ -1513,10 +1563,15 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(
 		GlobalAccumulator->GlobalSortKeysBufferAlt
 	};
 
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortDistanceBufferAlt,  ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalSortKeysBufferAlt,      ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	{
+		FRHITransitionInfo InitTransitions[] = {
+			FRHITransitionInfo(GlobalAccumulator->GlobalSortDistanceBufferAlt,  ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GlobalAccumulator->GlobalSortKeysBufferAlt,      ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+			FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+		};
+		RHICmdList.Transition(MakeArrayView(InitTransitions, UE_ARRAY_COUNT(InitTransitions)));
+	}
 	// GlobalSortParamsBuffer and GlobalSortIndirectArgsGlobalBuffer are already
 	// in SRVCompute / IndirectArgs state from DispatchPrefixSumVisibleCounts
 
@@ -1574,8 +1629,14 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(
 			UnsetShaderUAVs(RHICmdList, DigitPrefixSumShader, DigitPrefixSumShader.GetComputeShader());
 		}
 
-		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: DigitOffset + Histogram both needed by ScatterCS
+		{
+			FRHITransitionInfo ScatterBarriers[] = {
+				FRHITransitionInfo(GlobalAccumulator->GlobalRadixDigitOffsetBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(GlobalAccumulator->GlobalRadixHistogramBuffer,   ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(ScatterBarriers, UE_ARRAY_COUNT(ScatterBarriers)));
+		}
 
 		// --- ScatterCS: indirect dispatch ---
 		{
@@ -1598,8 +1659,14 @@ void FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(
 			UnsetShaderUAVs(RHICmdList, ScatterShader, ScatterShader.GetComputeShader());
 		}
 
-		RHICmdList.Transition(FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(KeyBuffers[DstIdx],  ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		// Batch barrier: Dst key/value buffers needed by next pass CountCS
+		{
+			FRHITransitionInfo PassBarriers[] = {
+				FRHITransitionInfo(DistBuffers[DstIdx], ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(KeyBuffers[DstIdx],  ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
+			};
+			RHICmdList.Transition(MakeArrayView(PassBarriers, UE_ARRAY_COUNT(PassBarriers)));
+		}
 	}
 
 	// After 4 passes (even), result is in primary buffers [0]
@@ -1768,7 +1835,8 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	FGaussianSplatGPUResources* GPUResources,
 	const FMatrix& LocalToWorld,
 	float ErrorThreshold,
-	bool bUseLODRendering)
+	bool bUseLODRendering,
+	float LODBias)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatClusterCulling);
 
@@ -1875,7 +1943,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
 		CullingParams.ScreenHeight = FMath::Max(ProjMatrix.M[0][0], ProjMatrix.M[1][1]);
 		CullingParams.ErrorThreshold = FMath::Max(0.001f, ErrorThreshold);
-		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
+		CullingParams.LODBias = LODBias + CVarGlobalLODBias.GetValueOnRenderThread();
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)
 		CullingParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();

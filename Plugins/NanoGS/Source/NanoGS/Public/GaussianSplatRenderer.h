@@ -91,7 +91,8 @@ public:
 		FGaussianSplatGPUResources* GPUResources,
 		const FMatrix& LocalToWorld,
 		float ErrorThreshold,
-		bool bUseLODRendering = false
+		bool bUseLODRendering = false,
+		float LODBias = 0.0f
 	);
 
 	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed

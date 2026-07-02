@@ -57,6 +57,13 @@ def parse_args():
         help="Trim outliers by percentile (e.g., 1 means use 1st-99th percentile for bbox). "
              "Points outside trimmed bbox are assigned to edge tiles. Default: 0 (no trimming)",
     )
+    parser.add_argument(
+        "--axes",
+        type=str,
+        default="xz",
+        choices=["xy", "xz", "yz"],
+        help="Axes to use for tiling plane (default: xz). Use xz when Y is the up axis.",
+    )
     return parser.parse_args()
 
 
@@ -101,36 +108,40 @@ def get_bounding_box(vertices, trim_percentile: float = 0) -> dict:
         }
 
 
-def calculate_tile_grid(bbox: dict, tile_size: float) -> dict:
+def calculate_tile_grid(bbox: dict, tile_size: float, axes: str = "xz") -> dict:
     """Calculate the tile grid parameters."""
-    # Calculate grid dimensions
-    x_range = bbox["max_x"] - bbox["min_x"]
-    y_range = bbox["max_y"] - bbox["min_y"]
+    a0, a1 = axes[0], axes[1]
+    a0_range = bbox[f"max_{a0}"] - bbox[f"min_{a0}"]
+    a1_range = bbox[f"max_{a1}"] - bbox[f"min_{a1}"]
 
-    num_tiles_x = int(np.ceil(x_range / tile_size))
-    num_tiles_y = int(np.ceil(y_range / tile_size))
+    num_tiles_x = int(np.ceil(a0_range / tile_size))
+    num_tiles_y = int(np.ceil(a1_range / tile_size))
 
     return {
         "num_tiles_x": num_tiles_x,
         "num_tiles_y": num_tiles_y,
         "total_tiles": num_tiles_x * num_tiles_y,
-        "origin_x": bbox["min_x"],
-        "origin_y": bbox["min_y"],
+        "origin_x": bbox[f"min_{a0}"],
+        "origin_y": bbox[f"min_{a1}"],
         "tile_size": tile_size,
+        "axis0": a0,
+        "axis1": a1,
     }
 
 
 def assign_points_to_tiles(vertices, grid: dict) -> dict:
-    """Assign each point to a tile based on XY position."""
+    """Assign each point to a tile based on the chosen axes."""
     print("Assigning points to tiles...")
     start = time.time()
 
-    x = vertices["x"]
-    y = vertices["y"]
+    a0 = grid.get("axis0", "x")
+    a1 = grid.get("axis1", "y")
+    v0 = vertices[a0]
+    v1 = vertices[a1]
 
     # Calculate tile indices for each point
-    tile_x = np.floor((x - grid["origin_x"]) / grid["tile_size"]).astype(int)
-    tile_y = np.floor((y - grid["origin_y"]) / grid["tile_size"]).astype(int)
+    tile_x = np.floor((v0 - grid["origin_x"]) / grid["tile_size"]).astype(int)
+    tile_y = np.floor((v1 - grid["origin_y"]) / grid["tile_size"]).astype(int)
 
     # Clamp to valid range (handles edge cases at max boundary)
     tile_x = np.clip(tile_x, 0, grid["num_tiles_x"] - 1)
@@ -220,7 +231,7 @@ def print_info(vertices, bbox: dict, grid: dict, tiles: dict = None,
     print(f"  Y: {bbox['min_y']:.2f} to {bbox['max_y']:.2f} (range: {bbox['max_y'] - bbox['min_y']:.2f})")
     print(f"  Z: {bbox['min_z']:.2f} to {bbox['max_z']:.2f} (range: {bbox['max_z'] - bbox['min_z']:.2f})")
 
-    print(f"\nTile Grid (tile size: {grid['tile_size']}):")
+    print(f"\nTile Grid (tile size: {grid['tile_size']}, axes: {grid.get('axis0','x')}{grid.get('axis1','y')}):")
     print(f"  Grid dimensions: {grid['num_tiles_x']} x {grid['num_tiles_y']} = {grid['total_tiles']} tiles")
 
     if tiles:
@@ -261,7 +272,7 @@ def main():
         bbox = actual_bbox
         actual_bbox = None  # Don't show twice
 
-    grid = calculate_tile_grid(bbox, args.tile_size)
+    grid = calculate_tile_grid(bbox, args.tile_size, args.axes)
 
     if args.info_only:
         # Just show info without actually assigning/saving

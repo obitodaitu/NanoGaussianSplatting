@@ -66,6 +66,20 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
 	ECVF_RenderThreadSafe);
 
+/** Global LOD bias applied on top of per-component LODErrorThreshold.
+ *  Positive values make LOD switch to coarser levels sooner (better perf, less detail at distance).
+ *  Negative values keep more detail (worse perf, sharper at distance).
+ *  Internally multiplied: effectiveThreshold = LODErrorThreshold * exp(LODBias * 0.5)
+ *  0.0 = no bias. 1.0 ≈ 65% more aggressive. 2.0 ≈ 170% more aggressive. */
+TAutoConsoleVariable<float> CVarGlobalLODBias(
+	TEXT("gs.GlobalLODBias"),
+	0.0f,
+	TEXT("Global LOD bias for Gaussian Splats (added on top of per-component LODErrorThreshold).\n")
+	TEXT("Positive = coarser LOD sooner (better far-distance performance).\n")
+	TEXT("Negative = finer LOD longer (sharper but slower).\n")
+	TEXT("Default: 0.0. Try 1.0 or 2.0 to fix far-distance slowdowns."),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 

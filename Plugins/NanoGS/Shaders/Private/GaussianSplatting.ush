@@ -146,6 +146,9 @@ float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex,
 // Returns: shDC (DC coefficient), sh[15] (higher-order coefficients up to numEvalCoeffs-1, rest zeroed)
 void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int bufferCoeffs, int numEvalCoeffs, out float3 shDC, out float3 sh[15])
 {
+	// Clamp numEvalCoeffs to what is actually stored — prevents out-of-bounds reads
+	// when SHOrder requests more bands than the asset contains.
+	numEvalCoeffs = min(numEvalCoeffs, bufferCoeffs);
 	// Format: Float16, 3 channels * bufferCoeffs * 2 bytes
 	// Each coefficient = 3 x float16 = 6 bytes
 	// ByteAddressBuffer requires 4-byte aligned reads, so we read from 4-byte

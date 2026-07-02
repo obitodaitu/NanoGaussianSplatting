@@ -17,7 +17,7 @@
 
 #ifdef COUNT_CS
 
-RWStructuredBuffer<uint> HistogramBuffer; // [digit * NumTiles + tileIdx]
+RWStructuredBuffer<uint> HistogramBuffer; // [tileIdx * NUM_DIGITS + digit]  (tile-major layout)
 RWStructuredBuffer<uint> SrcKeys;         // Sort keys (distances)
 StructuredBuffer<uint> SortParams;        // [0]=Count, [1]=NumTiles (for indirect sort)
 uint RadixShift;
@@ -56,8 +56,8 @@ void CountCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
 
 	GroupMemoryBarrierWithGroupSync();
 
-	// Write shared histogram to global memory
-	HistogramBuffer[threadIdx * numTiles + tileIdx] = SharedHistogram[threadIdx];
+	// Write shared histogram to global memory (tile-major: each tile's row is contiguous)
+	HistogramBuffer[tileIdx * NUM_DIGITS + threadIdx] = SharedHistogram[threadIdx];
 }
 
 #endif // COUNT_CS
@@ -70,7 +70,7 @@ void CountCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
 
 #ifdef PREFIX_SUM_CS
 
-RWStructuredBuffer<uint> HistogramBuffer;    // [digit * NumTiles + tileIdx]
+RWStructuredBuffer<uint> HistogramBuffer;    // [tileIdx * NUM_DIGITS + digit]  (tile-major layout)
 RWStructuredBuffer<uint> DigitOffsetBuffer;  // [digit] - total count per digit
 StructuredBuffer<uint> SortParams;           // [0]=Count, [1]=NumTiles (for indirect sort)
 uint NumTiles;
@@ -86,7 +86,9 @@ void PrefixSumCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThrea
 
 	// Read NumTiles from buffer (indirect) or uniform (direct)
 	uint numTiles = UseIndirectSort ? SortParams[1] : NumTiles;
-	uint baseOffset = digit * numTiles;
+	// tile-major: HistogramBuffer[tileIdx * NUM_DIGITS + digit]
+	// For a fixed digit, values are at indices: 0*256+digit, 1*256+digit, 2*256+digit...
+	// stride between consecutive tiles for this digit = NUM_DIGITS
 
 	uint runningTotal = 0;
 
@@ -95,11 +97,11 @@ void PrefixSumCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThrea
 	{
 		uint tileIdx = chunkStart + threadIdx;
 
-		// Load value
+		// Load value (tile-major read: stride = NUM_DIGITS)
 		uint val = 0;
 		if (tileIdx < numTiles)
 		{
-			val = HistogramBuffer[baseOffset + tileIdx];
+			val = HistogramBuffer[tileIdx * NUM_DIGITS + digit];
 		}
 		SharedData[threadIdx] = val;
 		GroupMemoryBarrierWithGroupSync();
@@ -121,10 +123,10 @@ void PrefixSumCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThrea
 		uint exclusive = (threadIdx == 0) ? 0 : SharedData[threadIdx - 1];
 		exclusive += runningTotal;
 
-		// Write back
+		// Write back (tile-major)
 		if (tileIdx < numTiles)
 		{
-			HistogramBuffer[baseOffset + tileIdx] = exclusive;
+			HistogramBuffer[tileIdx * NUM_DIGITS + digit] = exclusive;
 		}
 
 		// Update running total (last element's inclusive sum)
@@ -193,7 +195,7 @@ RWStructuredBuffer<uint> SrcKeys;
 RWStructuredBuffer<uint> SrcVals;
 RWStructuredBuffer<uint> DstKeys;
 RWStructuredBuffer<uint> DstVals;
-RWStructuredBuffer<uint> HistogramBuffer;    // [digit * NumTiles + tileIdx] - tile prefix sums
+RWStructuredBuffer<uint> HistogramBuffer;    // [tileIdx * NUM_DIGITS + digit]  tile-major prefix sums
 RWStructuredBuffer<uint> DigitOffsetBuffer;  // [digit] - global digit offsets
 StructuredBuffer<uint> SortParams;           // [0]=Count, [1]=NumTiles (for indirect sort)
 uint RadixShift;
@@ -218,9 +220,9 @@ void ScatterCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadI
 	uint sortCount = UseIndirectSort ? SortParams[0] : Count;
 	uint numTiles = UseIndirectSort ? SortParams[1] : NumTiles;
 
-	// Load digit offsets for this tile into shared memory
-	// SharedDigitOffsets[d] = DigitOffsetBuffer[d] + HistogramBuffer[d * numTiles + tileIdx]
-	SharedDigitOffsets[threadIdx] = DigitOffsetBuffer[threadIdx] + HistogramBuffer[threadIdx * numTiles + tileIdx];
+	// Load digit offsets for this tile into shared memory (tile-major: tileIdx * NUM_DIGITS + digit)
+	// SharedDigitOffsets[d] = DigitOffsetBuffer[d] + HistogramBuffer[tileIdx * NUM_DIGITS + d]
+	SharedDigitOffsets[threadIdx] = DigitOffsetBuffer[threadIdx] + HistogramBuffer[tileIdx * NUM_DIGITS + threadIdx];
 
 	// Initialize running histogram for stable ranking
 	SharedLocalHist[threadIdx] = 0;
@@ -252,9 +254,8 @@ void ScatterCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadI
 	uint tileCount = min(TILE_SIZE, sortCount - tileStart);
 
 	// Process elements in KEYS_PER_THREAD passes of BLOCK_THREADS elements each.
-	// Old approach: each element scanned ALL predecessors (0..localIdx-1), up to 1024 → O(N²).
-	// New approach: split into 4 passes of 256. A running histogram tracks counts from
-	// previous passes. Each element only scans within its 256-element pass → ~4x less work.
+	// Each element only scans within its 256-element pass.
+	// Intra-pass scan is O(N) per thread but entirely in LDS — fast on all SM5+ GPUs.
 	for (uint pass = 0; pass < KEYS_PER_THREAD; pass++)
 	{
 		uint localIdx = pass * BLOCK_THREADS + threadIdx;
@@ -266,16 +267,13 @@ void ScatterCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadI
 			// Base rank: count of elements with same digit from all previous passes
 			uint baseRank = SharedLocalHist[myDigit];
 
-			// Intra-pass rank: count elements before me in THIS pass with same digit
-			// Scan range is only threadIdx (0..255), not localIdx (0..1023)
+			// Intra-pass rank: count elements before me in THIS pass with same digit.
+			// LDS scan (O(256) per thread, all shared memory — fast on all SM5+ GPUs)
 			uint intraRank = 0;
 			uint passStart = pass * BLOCK_THREADS;
 			for (uint j = 0; j < threadIdx; j++)
 			{
-				if (SharedDigits[passStart + j] == myDigit)
-				{
-					intraRank++;
-				}
+				intraRank += (SharedDigits[passStart + j] == myDigit) ? 1u : 0u;
 			}
 
 			// Scatter to sorted position

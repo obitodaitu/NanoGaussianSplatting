@@ -193,46 +193,37 @@ float3x3 CalcCovariance3D(float4 rotation, float3 scale)
 float2x2 CalcCovariance2D(float3x3 cov3D, float3x3 viewMatrix, float3 viewPos, float2 focal)
 {
 	// Transform covariance from world space to view/camera space
-	// cov_view = W * cov_world * W^T
-	// For row-major matrices: mul(transpose(W), mul(cov, W)) = W * cov * W^T
 	float3x3 viewCov = mul(transpose(viewMatrix), mul(cov3D, viewMatrix));
 
-	// Depth in camera space
-	float z = viewPos.z;
-	float z2 = z * z;
+	float z   = viewPos.z;
+	float z2  = z * z;
+	float x   = viewPos.x;
+	float y   = viewPos.y;
+	float fx  = focal.x;
+	float fy  = focal.y;
 
-	// Position in camera space for off-center terms
-	float x = viewPos.x;
-	float y = viewPos.y;
+	// Inline cov2D = J * viewCov * J^T without storing the intermediate 2×3 matrix.
+	// J = [ fx/z   0    -fx*x/z2 ]
+	//     [  0    fy/z  -fy*y/z2 ]
+	// jRow0 = [ fxz*vc00 - fxxz2*vc20,  fxz*vc01 - fxxz2*vc21,  fxz*vc02 - fxxz2*vc22 ]
+	// jRow1 = [ fyz*vc10 - fyyz2*vc20,  fyz*vc11 - fyyz2*vc21,  fyz*vc12 - fyyz2*vc22 ]
+	// cov2D[i][j] = jRow_i . (col_j of J^T)
+	//   J^T col0 = (fxz, 0, -fxxz2), col1 = (0, fyz, -fyyz2)
+	float fxz   = fx / z;
+	float fyz   = fy / z;
+	float fxxz2 = fx * x / z2;
+	float fyyz2 = fy * y / z2;
 
-	// Full Jacobian of perspective projection:
-	// J = [ fx/z   0    -fx*x/z² ]
-	//     [  0    fy/z  -fy*y/z² ]
-	//
-	// cov2D = J * viewCov * J^T
+	float vc00 = viewCov[0][0], vc01 = viewCov[0][1], vc02 = viewCov[0][2];
+	float vc10 = viewCov[1][0], vc11 = viewCov[1][1], vc12 = viewCov[1][2];
+	float vc20 = viewCov[2][0], vc21 = viewCov[2][1], vc22 = viewCov[2][2];
 
-	float fx = focal.x;
-	float fy = focal.y;
-
-	// Compute J * viewCov first (2x3 result)
-	float3 jRow0 = float3(fx/z * viewCov[0][0] - fx*x/z2 * viewCov[2][0],
-	                       fx/z * viewCov[0][1] - fx*x/z2 * viewCov[2][1],
-	                       fx/z * viewCov[0][2] - fx*x/z2 * viewCov[2][2]);
-	float3 jRow1 = float3(fy/z * viewCov[1][0] - fy*y/z2 * viewCov[2][0],
-	                       fy/z * viewCov[1][1] - fy*y/z2 * viewCov[2][1],
-	                       fy/z * viewCov[1][2] - fy*y/z2 * viewCov[2][2]);
-
-	// Then multiply by J^T (3x2)
-	// J^T = [ fx/z     0    ]
-	//       [  0      fy/z  ]
-	//       [-fx*x/z² -fy*y/z²]
 	float2x2 cov2D;
-	cov2D[0][0] = jRow0.x * fx/z + jRow0.z * (-fx*x/z2);
-	cov2D[0][1] = jRow0.y * fy/z + jRow0.z * (-fy*y/z2);
-	cov2D[1][0] = jRow1.x * fx/z + jRow1.z * (-fx*x/z2);
-	cov2D[1][1] = jRow1.y * fy/z + jRow1.z * (-fy*y/z2);
+	cov2D[0][0] = (fxz*vc00 - fxxz2*vc20) * fxz  + (fxz*vc02 - fxxz2*vc22) * (-fxxz2);
+	cov2D[0][1] = (fxz*vc01 - fxxz2*vc21) * fyz  + (fxz*vc02 - fxxz2*vc22) * (-fyyz2);
+	cov2D[1][0] = (fyz*vc10 - fyyz2*vc20) * fxz  + (fyz*vc12 - fyyz2*vc22) * (-fxxz2);
+	cov2D[1][1] = (fyz*vc11 - fyyz2*vc21) * fyz  + (fyz*vc12 - fyyz2*vc22) * (-fyyz2);
 
-	// Add small value to diagonal for numerical stability (low-pass filter)
 	cov2D[0][0] += 0.3;
 	cov2D[1][1] += 0.3;
 

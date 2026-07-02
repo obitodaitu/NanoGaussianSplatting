@@ -229,20 +229,22 @@ FPixelOutput MainPS(FVertexOutput Input)
 		return Output;
 	}
 
-	// Normalized Gaussian falloff (matches SuperSplat)
-	// Shifts and rescales exp(-4*A) so it reaches exactly 0.0 at the quad edge,
-	// eliminating the visible discontinuity from a nonzero cutoff
+	// Standard 3DGS Gaussian falloff: exp(-r²/2) evaluated at sigma-scaled distance.
+	// LocalPos is in [-1,1] quad space; the covariance decomposition in CalcViewData
+	// scales the quad axes so that LocalPos=±1 corresponds to ±sqrt(8)σ (≈2.83σ),
+	// matching the original paper's cutoff radius.
+	// This produces the correct splat tail coverage and smooth inter-splat blending.
 	float distSq = dot(Input.LocalPos, Input.LocalPos);
 
-	// Discard pixels outside the unit circle for efficiency
+	// Discard pixels outside the quad boundary
 	if (distSq > 1.0)
 	{
 		discard;
 	}
 
-	static const float EXP4 = exp(-4.0);           // ≈ 0.0183
-	static const float INV_EXP4 = 1.0 / (1.0 - EXP4); // normalization factor
-	float gaussianWeight = (exp(-4.0 * distSq) - EXP4) * INV_EXP4;
+	// r² in sigma units: LocalPos maps [0,1] → [0, 8] sigma²
+	// exp(-r²/2) = exp(-4 * distSq)
+	float gaussianWeight = exp(-4.0 * distSq);
 
 	// Apply Gaussian to alpha
 	color.a = saturate(gaussianWeight * color.a);

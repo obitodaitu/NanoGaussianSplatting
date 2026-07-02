@@ -208,7 +208,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		uint targetLODLevel = (uint)DebugForceLODLevel;
 		uint currentClusterIdx = clusterIndex;
 
-		while (true)
+		for (uint iter = 0; iter < 16u; iter++)
 		{
 			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
 
@@ -237,7 +237,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		// Auto mode: Walk up parent chain based on projected error threshold
 		uint currentClusterIdx = clusterIndex;
-		while (true)
+		for (uint iter = 0; iter < 16u; iter++)
 		{
 			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
 
@@ -257,8 +257,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			// Calculate projected error for parent cluster
 			float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
 
-			// Apply LOD bias (positive = prefer coarser LOD)
-			projectedError = projectedError * exp(-LODBias * 0.1);
+			// Apply LOD bias: positive bias makes LOD activate sooner (at closer distances).
+			// LODBias > 0: multiply projectedError by exp(-LODBias * 0.5) to reduce apparent error,
+			// making the threshold easier to meet → coarser LOD selected earlier.
+			// LODBias = 1.0 → ×0.61 (39% reduction); LODBias = 2.0 → ×0.37 (63% reduction).
+			projectedError = projectedError * exp(-LODBias * 0.5);
 
 			// If parent's error is acceptable, use the parent as selected cluster
 			if (projectedError < ErrorThreshold)

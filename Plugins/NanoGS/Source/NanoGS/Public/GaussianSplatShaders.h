@@ -522,3 +522,23 @@ class FPrefixSumVisibleCountsCS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("VISIBLE_PREFIX_SUM_CS"), 1);
 	}
 };
+
+/**
+ * GPU-side reset shader: clears VisibleSplatCountBuffer to 0 on the GPU.
+ * Replaces the CPU LockBuffer() stall that flushed the GPU pipeline every frame.
+ * Dispatched as (1,1,1) with 1 thread — single atomic write, minimal overhead.
+ */
+class FResetVisibleSplatCountCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FResetVisibleSplatCountCS);
+	SHADER_USE_PARAMETER_STRUCT(FResetVisibleSplatCountCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleSplatCount)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
